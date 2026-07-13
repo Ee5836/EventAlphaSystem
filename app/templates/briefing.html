@@ -1,0 +1,436 @@
+{% extends "base.html" %}
+{% block title %}每日简报 — BubbleEvent{% endblock %}
+{% block page_title %}每日简报{% endblock %}
+{% block topbar_actions %}
+<input type="date" class="form-control form-control-sm" id="datePicker"
+       value="{{ target_date }}" onchange="loadDate(this.value)" style="width:150px">
+<button class="btn btn-sm btn-accent" onclick="typeof generateBriefing==='function'?generateBriefing():location.href='/briefing'" id="genBtn">⚡ 生成简报</button>
+{% endblock %}
+{% block content %}
+
+{% if not briefing %}
+<div class="briefing-empty">
+    <div class="briefing-empty-icon">
+        <i class="bi bi-newspaper"></i>
+    </div>
+    <h3>{{ target_date }} 暂无简报</h3>
+    <p>点击右上角"生成简报"创建今日投资快报</p>
+    <button class="btn btn-accent" onclick="generateBriefing()">⚡ 生成今日简报</button>
+    {% if available_dates %}
+    <div class="briefing-history">
+        <span>历史简报：</span>
+        {% for d in available_dates[:12] %}
+        <a href="/briefing?date={{ d }}" class="briefing-date-chip">{{ d }}</a>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+
+{% else %}
+<!-- ═══════════════════ BRIEFING HEADER ═══════════════════ -->
+<header class="briefing-header">
+    <div class="briefing-masthead">
+        <span class="briefing-logo">◆ BubbleEvent</span>
+        <span class="briefing-label">每日投资简报</span>
+    </div>
+    <h1 class="briefing-date">{{ briefing.date.strftime('%Y年%m月%d日') }} · 星期{{ ['一','二','三','四','五','六','日'][briefing.date.weekday()] }}</h1>
+    <p class="briefing-disclaimer">⚠️ 本报告由 AI 自动生成，仅供研究参考，不构成投资建议。</p>
+</header>
+
+<article class="briefing-article">
+
+    <!-- ═══════════ Section 1: Executive Summary ═══════════ -->
+    <section class="briefing-block">
+        <h2 class="briefing-section-title"><span class="briefing-num">01</span> 核心摘要</h2>
+        <div class="briefing-summary">
+            {{ briefing.executive_summary | markdown | safe if briefing.executive_summary else '<p class="text-muted">暂无摘要</p>' | safe }}
+        </div>
+        <div class="briefing-donut-row">
+            <div class="briefing-donut-chart" id="eventDonutChart">
+                <div class="briefing-chart-placeholder">加载中…</div>
+            </div>
+            <div class="briefing-stat-cards">
+                {% set stats = briefing.event_stats_json %}
+                <div class="briefing-stat-card level-s">
+                    <span class="briefing-stat-card-value">{{ stats.get('S', 0) }}</span>
+                    <span class="briefing-stat-card-label">S 级 · 重大影响</span>
+                </div>
+                <div class="briefing-stat-card level-a">
+                    <span class="briefing-stat-card-value">{{ stats.get('A', 0) }}</span>
+                    <span class="briefing-stat-card-label">A 级 · 高关注</span>
+                </div>
+                <div class="briefing-stat-card level-b">
+                    <span class="briefing-stat-card-value">{{ stats.get('B', 0) }}</span>
+                    <span class="briefing-stat-card-label">B 级 · 常规事件</span>
+                </div>
+                <div class="briefing-stat-card level-c">
+                    <span class="briefing-stat-card-value">{{ stats.get('C', 0) }}</span>
+                    <span class="briefing-stat-card-label">C 级 · 一般消息</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══════════ Section 2: Market Snapshot ═══════════ -->
+    <section class="briefing-block">
+        <h2 class="briefing-section-title"><span class="briefing-num">02</span> 市场快照</h2>
+        {% if briefing.market_snapshot_json and briefing.market_snapshot_json.summary %}
+        <div class="briefing-text">
+            {{ briefing.market_snapshot_json.summary | markdown | safe }}
+        </div>
+        {% else %}
+        <p class="briefing-na">市场快照数据待更新</p>
+        {% endif %}
+        {% if briefing.key_numbers_json %}
+        <div class="briefing-metrics-grid">
+            {% set kn = briefing.key_numbers_json %}
+            <div class="briefing-metric-card">
+                <span class="briefing-metric-icon">📋</span>
+                <span class="briefing-metric-value">{{ kn.get('total_events', 0) }}</span>
+                <span class="briefing-metric-label">事件总数</span>
+            </div>
+            <div class="briefing-metric-card accent-red">
+                <span class="briefing-metric-icon">🔴</span>
+                <span class="briefing-metric-value">{{ kn.get('s_level', 0) }}</span>
+                <span class="briefing-metric-label">S 级事件</span>
+            </div>
+            <div class="briefing-metric-card accent-orange">
+                <span class="briefing-metric-icon">🟠</span>
+                <span class="briefing-metric-value">{{ kn.get('a_level', 0) }}</span>
+                <span class="briefing-metric-label">A 级事件</span>
+            </div>
+            <div class="briefing-metric-card accent-blue">
+                <span class="briefing-metric-icon">📡</span>
+                <span class="briefing-metric-value">{{ kn.get('active_sources', 0) }}</span>
+                <span class="briefing-metric-label">活跃数据源</span>
+            </div>
+        </div>
+        {% endif %}
+    </section>
+
+    <!-- ═══════════ Section 3: Top Events ═══════════ -->
+    <section class="briefing-block">
+        <h2 class="briefing-section-title"><span class="briefing-num">03</span> 今日重要事件</h2>
+        {% if briefing.top_events_json %}
+        <div class="briefing-events">
+            {% for event in briefing.top_events_json[:8] %}
+            <div class="briefing-event-item">
+                <span class="briefing-event-level level-{{ event.level|lower }}">{{ event.level }}</span>
+                <div class="briefing-event-body">
+                    <h4 class="briefing-event-title">{{ event.title }}</h4>
+                    {% if event.summary %}
+                    <p class="briefing-event-summary">{{ (event.summary or '')[:200] }}{% if event.summary and event.summary|length > 200 %}…{% endif %}</p>
+                    {% endif %}
+                    <div class="briefing-event-meta">
+                        {% if event.credibility_label %}
+                        <span class="briefing-event-cred">{{ event.credibility_label }}</span>
+                        {% endif %}
+                        {% if event.affected_industries %}
+                        {% for ind in event.affected_industries[:4] %}
+                        <span class="briefing-event-tag">{{ ind }}</span>
+                        {% endfor %}
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="briefing-na">暂无明显事件</p>
+        {% endif %}
+    </section>
+
+    <!-- ═══════════ Section 4: Prediction ═══════════ -->
+    <section class="briefing-block">
+        <h2 class="briefing-section-title"><span class="briefing-num">04</span> 走势预测速览</h2>
+        {% if briefing.prediction_summary_json and briefing.prediction_summary_json.summary %}
+        <div class="briefing-text">
+            {{ briefing.prediction_summary_json.summary | markdown | safe }}
+        </div>
+        {% else %}
+        <p class="briefing-na">今日暂无预测数据</p>
+        {% endif %}
+    </section>
+
+    <!-- ═══════════ Section 5: Sector Heatmap ═══════════ -->
+    <section class="briefing-block">
+        <h2 class="briefing-section-title"><span class="briefing-num">05</span> 行业热力图</h2>
+        <div class="briefing-chart-wrapper" id="heatmapChart">
+            <div class="briefing-chart-placeholder">行业热力图加载中…</div>
+        </div>
+    
+        <div class="briefing-chart-wrapper" id="sectorsBarChart" style="margin-top:1.5rem;">
+            <div class="briefing-chart-placeholder">涨跌排行加载中…</div>
+        </div></section>
+
+    <!-- ═══════════ Section 6: Risk Alerts ═══════════ -->
+    <section class="briefing-block">
+        <h2 class="briefing-section-title"><span class="briefing-num">06</span> 风险预警</h2>
+        {% if briefing.risk_alert_json %}
+        <div class="briefing-risks">
+            {% for item in briefing.risk_alert_json %}
+            <div class="briefing-risk-item {% if item.level == 'info' %}risk-info{% elif item.level == 'warning' %}risk-warning{% else %}risk-warning{% endif %}">
+                <span class="briefing-risk-icon">⚠️</span>
+                <span class="briefing-risk-text">{{ item.alert }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="briefing-na">暂无风险预警</p>
+        {% endif %}
+    </section>
+
+</article>
+
+<!-- ═══════════════════ FOOTER STATS ═══════════════════ -->
+<footer class="briefing-footer">
+    <div class="briefing-footer-left">
+        <span>📡 数据来源：{{ briefing.sources_count }} 个信息源</span>
+        <span class="briefing-footer-sep">|</span>
+        <span>📄 处理文章：{{ briefing.articles_processed }} 篇</span>
+    </div>
+    <div class="briefing-footer-right">
+        生成时间：{{ briefing.generated_at.strftime('%Y-%m-%d %H:%M') if briefing.generated_at else '' }}
+    </div>
+</footer>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Date navigation ─────────────────────────────────────────────────
+function loadDate(dateStr) {
+    window.location.href = `/briefing?date=${dateStr}`;
+}
+
+// ── Generate briefing ───────────────────────────────────────────────
+async function generateBriefing() {
+    const btn = document.getElementById('genBtn');
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>生成中…';
+    try {
+        const dateStr = document.getElementById('datePicker').value;
+        const resp = await fetch('/api/v1/briefing/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({date: dateStr})
+        });
+        const data = await resp.json();
+        if (data.success) {
+            location.reload();
+        } else {
+            showNotification('生成失败: ' + (data.error || '未知错误'), 'danger');
+        }
+    } catch(e) {
+        showNotification('请求失败: ' + e.message, 'danger');
+    }
+    btn.disabled = false;
+    btn.innerHTML = original;
+}
+
+// ── Sector heatmap chart ────────────────────────────────────────────
+{% set sectors_data = briefing.sector_heatmap_json.get('sectors', []) if briefing.sector_heatmap_json else [] %}
+{% set event_stats = briefing.event_stats_json if briefing else {} %}
+
+// Store data for theme-change re-render
+window._briefingSectors = {{ sectors_data | tojson | safe }};
+window._briefingEventStats = {{ event_stats | tojson | safe }};
+
+function initBriefingCharts() {
+    // Clean up previous chart instances first (for theme-change re-render or SPA re-entry)
+    if (typeof ChartResizeManager !== 'undefined') {
+        try { ChartResizeManager.disposeAll(); } catch(e) {}
+    }
+
+    const dom = document.getElementById('heatmapChart');
+    if (!dom) return;
+    const sectors = window._briefingSectors || [];
+
+    if (!sectors.length) {
+        dom.innerHTML = '<div class="briefing-chart-placeholder">暂无行业数据（非交易时间或数据源延迟）</div>';
+    } else {
+        const chart = echarts.init(dom);
+        const maxVal = Math.max(...sectors.map(s => Math.abs(s.change_pct)), 0.01);
+
+        chart.setOption({
+            tooltip: {
+                formatter: function(p) {
+                    const d = p.data;
+                    var pct = (d.change_pct || 0).toFixed(2);
+                    return '<strong>' + (d.name || '') + '</strong><br/>涨跌幅: ' + ((d.change_pct || 0) > 0 ? '+' : '') + pct + '%<br/>上涨: ' + (d.up_count || 0) + ' | 下跌: ' + (d.down_count || 0);
+                }
+            },
+            series: [{
+                type: 'treemap',
+                roam: false,
+                data: sectors.map(s => ({
+                    name: s.name,
+                    value: Math.abs(s.change_pct),
+                    change_pct: s.change_pct,
+                    up_count: s.up_count,
+                    down_count: s.down_count,
+                    itemStyle: {
+                        color: s.change_pct >= 0
+                            ? `rgba(239,68,68,${0.25 + (Math.abs(s.change_pct)/maxVal)*0.7})`
+                            : `rgba(34,197,94,${0.25 + (Math.abs(s.change_pct)/maxVal)*0.7})`
+                    }
+                })),
+                label: { show: true, formatter: '{b}', color: '#e6e9ef' },
+                upperLabel: { show: true, height: 30, color: '#99a3b6' },
+                itemStyle: { borderColor: '#0a0e14', borderWidth: 2 }
+            }]
+        });
+        ChartResizeManager.observe(chart, dom);
+    }
+
+    // ── Event level donut chart ───────────────────────────────────────
+    const donutDom = document.getElementById('eventDonutChart');
+    if (donutDom) {
+        const eventStats = window._briefingEventStats || {};
+        const donutData = [
+            {value: eventStats.S || 0, name: 'S 级', itemStyle: {color: '#ef4444'}},
+            {value: eventStats.A || 0, name: 'A 级', itemStyle: {color: '#f97316'}},
+            {value: eventStats.B || 0, name: 'B 级', itemStyle: {color: '#3b82f6'}},
+            {value: eventStats.C || 0, name: 'C 级', itemStyle: {color: '#6b7280'}},
+        ].filter(d => d.value > 0);
+
+        if (donutData.length === 0) {
+            donutDom.innerHTML = '<div class="briefing-chart-placeholder">暂无事件数据</div>';
+        } else {
+            const donutChart = echarts.init(donutDom);
+            donutChart.setOption({
+                tooltip: {trigger: 'item', formatter: '{b}: {c} 个 ({d}%)'},
+                series: [{
+                    type: 'pie',
+                    radius: ['55%', '78%'],
+                    center: ['50%', '50%'],
+                    avoidLabelOverlap: false,
+                    label: {
+                        show: true,
+                        position: 'outside',
+                        formatter: '{b}\n{d}%',
+                        color: '#99a3b6',
+                        fontSize: 11,
+                    },
+                    emphasis: {scale: false, label: {fontSize: 14, fontWeight: 'bold'}},
+                    data: donutData,
+                }],
+                graphic: [{
+                    type: 'text',
+                    left: 'center',
+                    top: 'center',
+                    style: {
+                        text: eventStats.total || 0,
+                        textAlign: 'center',
+                        fill: '#e6e9ef',
+                        fontSize: 28,
+                        fontWeight: 700,
+                    },
+                }, {
+                    type: 'text',
+                    left: 'center',
+                    top: '58%',
+                    style: {
+                        text: '事件总数',
+                        textAlign: 'center',
+                        fill: '#99a3b6',
+                        fontSize: 11,
+                    },
+                }],
+            });
+            ChartResizeManager.observe(donutChart, donutDom);
+        }
+    }
+
+    // ── Sector top gainers / losers bar chart ─────────────────────────
+    const barDom = document.getElementById('sectorsBarChart');
+    if (barDom && sectors.length) {
+        const sorted = [...sectors].sort((a, b) => b.change_pct - a.change_pct);
+        const top5 = sorted.slice(0, 5).reverse();
+        const bottom5 = sorted.slice(-5).reverse();
+        const barData = [...top5, ...bottom5];
+
+        const barChart = echarts.init(barDom);
+        barChart.setOption({
+            tooltip: {
+                trigger: 'axis',
+                axisPointer: {type: 'shadow'},
+                formatter: function(params) {
+                    var d = params[0].data;
+                    var pct = (d.change_pct || 0).toFixed(2);
+                    return '<strong>' + (d.name || '') + '</strong><br/>涨跌幅: ' + (d.change_pct > 0 ? '+' : '') + pct + '%<br/>上涨: ' + (d.up_count || 0) + ' | 下跌: ' + (d.down_count || 0);
+                },
+            },
+            grid: {left: '3%', right: '8%', top: '3%', bottom: '3%', containLabel: true},
+            xAxis: {
+                type: 'value',
+                axisLabel: {color: '#99a3b6', formatter: '{value}%'},
+                splitLine: {lineStyle: {color: 'rgba(255,255,255,0.06)'}},
+            },
+            yAxis: {
+                type: 'category',
+                data: barData.map(function(s) { return s.name; }),
+                axisLabel: {color: '#99a3b6', fontSize: 11, width: 60, overflow: 'truncate'},
+                axisLine: {show: false},
+                axisTick: {show: false},
+            },
+            series: [{
+                type: 'bar',
+                data: barData.map(function(s) {
+                    var maxAbs = sorted[0] ? Math.abs(sorted[0].change_pct) : 1;
+                    var minAbs = sorted.length > 0 ? Math.abs(sorted[sorted.length-1].change_pct) : 1;
+                    return {
+                        value: s.change_pct || 0,
+                        name: s.name,
+                        change_pct: s.change_pct || 0,
+                        up_count: s.up_count || 0,
+                        down_count: s.down_count || 0,
+                        itemStyle: {
+                            color: (s.change_pct || 0) >= 0
+                                ? 'rgba(239,68,68,' + (0.4 + ((s.change_pct || 0) / (maxAbs || 1)) * 0.5) + ')'
+                                : 'rgba(34,197,94,' + (0.4 + (Math.abs(s.change_pct || 0) / (minAbs || 1)) * 0.5) + ')',
+                            borderRadius: [0, 3, 3, 0],
+                        },
+                    };
+                }),
+                barWidth: '60%',
+                label: {
+                    show: true,
+                    position: 'right',
+                    formatter: function(p) { return ((p.value || 0) > 0 ? '+' : '') + (p.value || 0).toFixed(2) + '%'; },
+                    color: '#99a3b6',
+                    fontSize: 11,
+                },
+            }],
+        });
+        ChartResizeManager.observe(barChart, barDom);
+    } else if (barDom && !sectors.length) {
+        barDom.innerHTML = '<div class="briefing-chart-placeholder">暂无行业数据</div>';
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Clean up charts on page unload to avoid ResizeObserver port errors
+    window.addEventListener('beforeunload', function() {
+        ChartResizeManager.disposeAll();
+    });
+
+    initBriefingCharts();
+});
+
+// Re-render charts on theme change
+window.addEventListener('themechange', function() {
+    initBriefingCharts();
+});
+
+// SPA cleanup hook — called by router._cleanupPage() when navigating away
+window._pageDestroy = function() {
+    if (typeof ChartResizeManager !== 'undefined') {
+        try { ChartResizeManager.disposeAll(); } catch(e) {}
+    }
+};
+
+</script>
+{% endblock %}

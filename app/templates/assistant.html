@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}AI 研究助手 — BubbleEvent{% endblock %}
+{% block page_title %}{% endblock %}
+{% block topbar_actions %}{% endblock %}
+
+{% block head %}
+<style>
+    .assistant-standalone-canvas {
+        position: relative;
+        width: 100%;
+        height: calc(100vh - 120px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    /* Use the same .ai-window styles but positioned statically for standalone */
+    .assistant-standalone-canvas .ai-window {
+        position: relative;
+        width: 780px;
+        height: 620px;
+        min-width: 500px;
+        max-width: 95vw;
+        margin: 0 auto;
+    }
+    .assistant-standalone-canvas .ai-window.closed {
+        display: none;
+    }
+    .assistant-standalone-canvas .ai-resize-handle { display: none; }
+    #aiFab { display: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="assistant-standalone-canvas" id="assistantCanvas">
+    <!-- The AI widget JS will create the window here -->
+    <div class="text-center text-muted py-5" id="assistantLoading">
+        <div class="spinner-border spinner-border-sm mb-2"></div>
+        <p style="font-size:0.8rem">加载 AI 研究助手...</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Override the widget to place the window inside our canvas instead of body
+document.addEventListener('DOMContentLoaded', function() {
+    // Wait for widget to initialize
+    var check = setInterval(function() {
+        var win = document.getElementById('aiWindow');
+        var fab = document.getElementById('aiFab');
+        var canvas = document.getElementById('assistantCanvas');
+        var loading = document.getElementById('assistantLoading');
+        if (win && canvas && loading) {
+            clearInterval(check);
+            // Move window into canvas
+            canvas.appendChild(win);
+            win.classList.add('has-sidebar');
+            win.classList.remove('closed');
+            win.style.left = '0px';
+            win.style.top = '0px';
+            // Hide FAB
+            if (fab) fab.style.display = 'none';
+            // Remove loading
+            loading.remove();
+            // Open
+            if (window._aiWidget && !window._aiWidget._isOpen) {
+                window._aiWidget.open();
+            }
+        }
+    }, 100);
+});
+</script>
+{% endblock %}

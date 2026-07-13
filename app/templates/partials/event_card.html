@@ -1,0 +1,21 @@
+{# Reusable event card component #}
+<a href="/events/{{ card.event_id }}" class="text-decoration-none text-dark">
+    <div class="card h-100 shadow-sm event-card hover-lift {% if highlighted %}border-primary{% endif %}">
+        <div class="card-body">
+            <div class="d-flex justify-content-between align-items-start mb-2">
+                <span class="badge level-badge level-{{ card.level|lower }}">{{ card.level }}级</span>
+                <small class="text-muted">{{ card.created_at.strftime('%m-%d %H:%M') if card.created_at else '' }}</small>
+            </div>
+            <h6 class="card-title">{{ card.title[:80] }}</h6>
+            <p class="card-text small text-muted">{{ (card.summary or '')[:120] }}{% if card.summary and card.summary|length > 120 %}...{% endif %}</p>
+            <div class="d-flex flex-wrap gap-1 mb-2">
+                <span class="badge bg-secondary">{{ card.credibility_label or '需确认' }}</span>
+                <span class="badge bg-light text-dark">{{ card.event_type or '未分类' }}</span>
+                {% for industry in (card.affected_industries or [])[:3] %}
+                <span class="badge bg-light text-dark border">{{ industry }}</span>
+                {% endfor %}
+            </div>
+            <small class="text-muted">{{ card.source_summary or '' }}</small>
+        </div>
+    </div>
+</a>

@@ -1,0 +1,43 @@
+<!-- fragment: assistant -->
+<div class="page-assistant">
+<div class="assistant-standalone-canvas" id="assistantCanvas">
+    <div class="text-center text-muted py-5" id="assistantLoading">
+        <div class="spinner-border spinner-border-sm mb-2"></div>
+        <p style="font-size:0.8rem">加载 AI 研究助手...</p>
+    </div>
+</div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var check = setInterval(function() {
+        var win = document.getElementById('aiWindow');
+        var fab = document.getElementById('aiFab');
+        var canvas = document.getElementById('assistantCanvas');
+        var loading = document.getElementById('assistantLoading');
+        if (win && canvas && loading) {
+            clearInterval(check);
+            canvas.appendChild(win);
+            win.classList.add('has-sidebar');
+            win.classList.remove('closed');
+            win.style.left = '0px';
+            win.style.top = '0px';
+            if (fab) fab.style.display = 'none';
+            loading.remove();
+            if (window._aiWidget && !window._aiWidget._isOpen) {
+                window._aiWidget.open();
+            }
+        }
+    }, 100);
+});
+
+window._pageDestroy = function() {
+    // Return AI window to body on leaving assistant page
+    var win = document.getElementById('aiWindow');
+    if (win && win.parentElement && win.parentElement.id === 'assistantCanvas') {
+        document.body.appendChild(win);
+        win.classList.remove('has-sidebar');
+        win.style.left = ''; win.style.top = '';
+    }
+};
+</script>

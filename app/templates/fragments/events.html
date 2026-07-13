@@ -1,0 +1,77 @@
+<!-- fragment: events -->
+<div class="page-events">
+
+<!-- Level filter -->
+<div class="mb-3 d-flex justify-content-between align-items-center">
+    <div>
+        <span class="me-2">筛选等级:</span>
+        <a href="/events" class="btn btn-sm {% if not current_level %}btn-dark{% else %}btn-outline-dark{% endif %}" data-spa>全部</a>
+        <a href="/events?level=S" class="btn btn-sm {% if current_level == 'S' %}btn-danger{% else %}btn-outline-danger{% endif %}" data-spa>S级</a>
+        <a href="/events?level=A" class="btn btn-sm {% if current_level == 'A' %}btn-warning{% else %}btn-outline-warning{% endif %}" data-spa>A级</a>
+        <a href="/events?level=B" class="btn btn-sm {% if current_level == 'B' %}btn-info{% else %}btn-outline-info{% endif %}" data-spa>B级</a>
+        <a href="/events?level=S,A" class="btn btn-sm btn-outline-dark" data-spa>S+A级</a>
+    </div>
+    {% if cards %}
+    <button class="btn btn-sm btn-outline-accent" onclick="triggerPipelineGlobal()" title="处理已采集的文章，生成最新事件卡片">
+        🔄 更新事件
+    </button>
+    {% endif %}
+</div>
+
+{% if cards %}
+<div class="row">
+    {% for card in cards %}
+    <div class="col-md-6 col-lg-4 mb-3">
+        <a href="/events/{{ card.event_id }}" class="text-decoration-none text-dark" data-spa>
+            <div class="card h-100 shadow-sm event-card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <span class="badge level-badge level-{{ card.level|lower }}">{{ card.level }}级</span>
+                        <small class="text-muted">{{ card.created_at.strftime('%m-%d %H:%M') if card.created_at else '' }}</small>
+                    </div>
+                    <h6 class="card-title">{{ card.title[:80] }}</h6>
+                    <p class="card-text small text-muted">{{ (card.summary or '')[:120] }}{% if card.summary and card.summary|length > 120 %}...{% endif %}</p>
+                    <div class="d-flex flex-wrap gap-1 mb-2">
+                        <span class="badge bg-secondary">{{ card.credibility_label or '需确认' }}</span>
+                        <span class="badge bg-light text-dark">{{ card.event_type or '未分类' }}</span>
+                        {% for industry in (card.affected_industries or [])[:3] %}
+                        <span class="badge bg-light text-dark border">{{ industry }}</span>
+                        {% endfor %}
+                    </div>
+                    <small class="text-muted">{{ card.source_summary or '' }}</small>
+                </div>
+            </div>
+        </a>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Pagination -->
+{% if pagination.pages > 1 %}
+<nav class="mt-4">
+    <ul class="pagination justify-content-center">
+        <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+            <a class="page-link" href="/events?page={{ pagination.prev_num }}&level={{ current_level or '' }}" data-spa>上一页</a>
+        </li>
+        {% for p in range(1, pagination.pages + 1) %}
+        <li class="page-item {% if p == pagination.page %}active{% endif %}">
+            <a class="page-link" href="/events?page={{ p }}&level={{ current_level or '' }}" data-spa>{{ p }}</a>
+        </li>
+        {% endfor %}
+        <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+            <a class="page-link" href="/events?page={{ pagination.next_num }}&level={{ current_level or '' }}" data-spa>下一页</a>
+        </li>
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<div class="text-center py-5">
+    <i class="bi bi-inbox display-1 text-muted"></i>
+    <h4 class="text-muted mt-3">暂无事件数据</h4>
+    <p class="text-muted">点击"手动采集"按钮开始第一次数据采集</p>
+    <button class="btn btn-primary" onclick="triggerPipelineGlobal()">🔄 开始采集</button>
+</div>
+{% endif %}
+
+</div>

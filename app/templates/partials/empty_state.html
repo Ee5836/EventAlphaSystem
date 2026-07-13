@@ -1,0 +1,9 @@
+{# Reusable empty-state placeholder #}
+<div class="text-center py-5 empty-state">
+    <i class="bi {{ icon|default('bi-inbox') }} display-1 text-muted d-block mb-2"></i>
+    <h4 class="text-muted">{{ title|default('暂无数据') }}</h4>
+    <p class="text-muted">{{ message|default('') }}</p>
+    {% if action_url and action_text %}
+    <a href="{{ action_url }}" class="btn btn-primary mt-2">{{ action_text }}</a>
+    {% endif %}
+</div>

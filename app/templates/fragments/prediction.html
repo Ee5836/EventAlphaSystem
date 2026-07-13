@@ -1,0 +1,615 @@
+<!-- fragment: prediction -->
+<div class="page-prediction">
+
+<div class="row g-3 mb-3">
+    <div class="col-md-6 col-lg-5">
+        <div class="search-bar">
+            <i class="bi bi-search search-icon"></i>
+            <input type="text" class="form-control" id="stockSearch"
+                   placeholder="搜索其他股票... 热门股票已自动加载"
+                   oninput="searchStocks()">
+            <div id="searchDropdown" class="position-absolute w-100 border rounded shadow-sm"
+                 style="top:105%;z-index:1000;display:none;max-height:240px;overflow-y:auto;background:var(--bg-elevated)"></div>
+        </div>
+    </div>
+    <div class="col-md-auto">
+        <small class="text-muted" id="statusText">正在加载热门股票...</small>
+    </div>
+</div>
+
+<!-- Hot bar + content -->
+<div id="predictionContent">
+    <div class="text-center py-5">
+        <div class="spinner-border text-primary mb-3"></div>
+        <h5 class="text-muted">正在分析当前热点事件...</h5>
+        <p class="small text-muted">匹配热门股票 → 获取实时K线 → AI多维度预测</p>
+    </div>
+</div>
+
+</div>
+
+<script>
+// ── Cleanup previous page state ─────────────────────────────────────
+if (typeof window._pageDestroy === 'function') window._pageDestroy();
+window._pageDestroy = null;
+
+var currentSymbol = '';
+var searchTimeout;
+var currentPredictionData = null;
+var hotStocksData = [];
+var _currentIndustryFilter = '';
+var _predictionDataCache = {};
+var _chartInstances = {};
+var _activeAbortControllers = new Set();  // track in-flight requests for cleanup
+
+var CACHE_STORAGE_KEY = 'bubbleevent_prediction_cache';
+var CACHE_TTL_MS = 10 * 60 * 1000;
+
+function _persistCache() {
+    try {
+        var payload = { ts: Date.now(), data: _predictionDataCache };
+        sessionStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(payload));
+    } catch(e) {}
+}
+
+function _restoreCache() {
+    try {
+        var raw = sessionStorage.getItem(CACHE_STORAGE_KEY);
+        if (!raw) return;
+        var payload = JSON.parse(raw);
+        if (!payload || !payload.data || !payload.ts) return;
+        if (Date.now() - payload.ts > CACHE_TTL_MS) {
+            sessionStorage.removeItem(CACHE_STORAGE_KEY);
+            return;
+        }
+        _predictionDataCache = payload.data;
+    } catch(e) {}
+}
+
+_restoreCache();
+
+// ═══════════════════════ STOCK SEARCH ══════════════════════════════
+async function searchStocks() {
+    clearTimeout(searchTimeout);
+    const q = document.getElementById('stockSearch').value.trim();
+    const dropdown = document.getElementById('searchDropdown');
+    if (q.length < 1) { dropdown.style.display = 'none'; return; }
+    searchTimeout = setTimeout(async () => {
+        try {
+            const resp = await fetch('/api/v1/prediction/stocks/search?q=' + encodeURIComponent(q));
+            const data = await resp.json();
+            if (data.success && data.data.length) {
+                dropdown.innerHTML = data.data.map(s =>
+                    '<div class="search-result-item d-flex justify-content-between"'
+                    + ' onclick="selectStock(\'' + s.symbol + '\',\'' + s.name + '\')">'
+                    + '<span><strong>' + s.symbol + '</strong> ' + s.name + '</span>'
+                    + '<small class="text-muted">' + (s.industry||'') + '</small>'
+                    + '</div>').join('');
+                dropdown.style.display = 'block';
+            } else {
+                dropdown.innerHTML = '<div class="p-2 text-muted small">未找到，按 Enter 直接分析</div>';
+                dropdown.style.display = 'block';
+            }
+        } catch(e) {}
+    }, 300);
+}
+
+function selectStock(symbol, name) {
+    document.getElementById('stockSearch').value = symbol + ' ' + name;
+    document.getElementById('searchDropdown').style.display = 'none';
+    currentSymbol = symbol;
+    runPrediction();
+}
+
+function quickPredict(symbol, name) {
+    document.getElementById('stockSearch').value = symbol + ' ' + name;
+    currentSymbol = symbol;
+    runPrediction();
+}
+
+document.addEventListener('click', function(e) {
+    const dd = document.getElementById('searchDropdown');
+    const input = document.getElementById('stockSearch');
+    if (dd && input && !input.contains(e.target) && !dd.contains(e.target)) dd.style.display = 'none';
+});
+
+document.getElementById('stockSearch').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); document.getElementById('searchDropdown').style.display='none'; runPrediction(); }
+});
+
+function onHorizonChange() {
+    if (hotStocksData.length > 0) loadAllPredictions();
+}
+
+// ═══════════════════════ RUN PREDICTION (manual search) ════════════
+async function runPrediction() {
+    const input = document.getElementById('stockSearch').value.trim();
+    if (!input) { showNotification('请输入股票代码', 'warning'); return; }
+    const match = input.match(/(\d{6})/);
+    if (!match) { showNotification('请输入有效的6位股票代码', 'warning'); return; }
+    const symbol = match[1];
+    currentSymbol = symbol;
+    const horizonEl = document.getElementById('horizonSelect');
+    const horizon = horizonEl ? horizonEl.value : 'T+3';
+    const btn = document.getElementById('predictBtn');
+    var restore = function(){};
+    if (btn) restore = LoadingState.button(btn, '分析中...');
+    const container = document.getElementById('predictionContent');
+    container.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div><p class="text-muted mt-2">正在分析...</p></div>';
+    try {
+        const controller = new AbortController();
+        _activeAbortControllers.add(controller);
+        const resp = await fetch('/api/v1/prediction/predict/' + symbol + '?horizon=' + horizon + '&mode=full', { signal: controller.signal });
+        _activeAbortControllers.delete(controller);
+        const data = await resp.json();
+        if (data.success) {
+            data.data._mode = 'full';
+            currentPredictionData = data.data;
+            _predictionDataCache[symbol + '_' + horizon] = data.data;
+            _persistCache();
+            container.innerHTML = '<div class="row" id="singleChartRow"><div class="col-12" id="singleChartCol"></div></div>';
+            renderCompactCard(data.data, 'singleChartCol', true);
+        } else {
+            container.innerHTML = '<div class="alert alert-danger">分析失败: ' + (data.error||'未知错误') + '<br><button class="btn btn-sm btn-outline-primary mt-2" onclick="loadAllPredictions()">← 返回热门股票</button></div>';
+        }
+    } catch(e) {
+        _activeAbortControllers.forEach(function(c) { if (c.signal.aborted) _activeAbortControllers.delete(c); });
+        if (e.name !== 'AbortError') {
+            container.innerHTML = '<div class="alert alert-danger">请求失败: ' + e.message + '<br><button class="btn btn-sm btn-outline-primary mt-2" onclick="loadAllPredictions()">← 返回热门股票</button></div>';
+        }
+    }
+    restore();
+}
+
+// ═══════════════════════ AUTO-LOAD ALL HOT STOCKS ═════════════════
+async function loadHotStocks() {
+    const container = document.getElementById('predictionContent');
+    try {
+        const resp = await fetch('/api/v1/prediction/hot');
+        const data = await resp.json();
+        if (!data.success || !data.data.stocks.length) {
+            container.innerHTML = '<div class="text-center py-5 text-muted"><i class="bi bi-graph-up display-1 d-block mb-2"></i><h5>暂无热门事件数据</h5><p class="small">请先运行事件采集管道</p></div>';
+            return;
+        }
+        hotStocksData = data.data.stocks;
+        window._allHotStocks = [...hotStocksData];
+
+        const eventBadge = data.data.event_count > 0 ? '<span class="badge bg-danger me-1">' + data.data.event_count + '个热门事件</span>' : '';
+        const industryTags = (data.data.top_industries||[]).slice(0,8)
+            .map(function(i) { return '<span class="badge bg-light text-dark border small me-1" style="cursor:pointer" onclick="event.stopPropagation();filterByIndustry(\'' + i.replace(/'/g,"\\'") + '\')" title="筛选「' + i + '」">' + i + '</span>'; }).join('');
+
+        container.innerHTML = ''
+            + '<div class="card shadow-sm mb-3 fade-in-up"><div class="card-body py-2">'
+            + '<div class="d-flex flex-wrap align-items-center gap-2">'
+            + '<strong class="small me-2">🔥 当前热门:</strong> ' + eventBadge + ' ' + industryTags
+            + '<span class="badge bg-primary small me-1" style="cursor:pointer" id="filterAllBadge" onclick="event.stopPropagation();filterByIndustry(\'\')">全部</span>'
+            + '<span class="text-muted small ms-auto">点击行业标签筛选 · 图表即时渲染 · 后台LLM升级</span>'
+            + '</div></div></div>'
+            + '<div class="row g-3" id="allChartsGrid"></div>';
+
+        document.getElementById('statusText').textContent = '已匹配 ' + hotStocksData.length + ' 只热门股票';
+        loadAllPredictions();
+    } catch(e) {
+        container.innerHTML = '<div class="alert alert-danger">加载失败: ' + e.message + '</div>';
+    }
+}
+
+function filterByIndustry(industry) {
+    _currentIndustryFilter = industry;
+    const filtered = industry ? (window._allHotStocks||hotStocksData).filter(function(s) { return s.industry===industry || s.reason.includes(industry); }) : (window._allHotStocks||hotStocksData);
+    const hotBar = document.querySelector('.card-body');
+    if (hotBar) {
+        hotBar.querySelectorAll('.badge').forEach(function(t) {
+            if (t.id === 'filterAllBadge') return;
+            t.classList.remove('bg-primary', 'text-white');
+            t.classList.add('bg-light', 'text-dark');
+        });
+    }
+    if (industry && hotBar) {
+        hotBar.querySelectorAll('.badge').forEach(function(t) {
+            if (t.textContent.trim() === industry) {
+                t.classList.add('bg-primary', 'text-white');
+                t.classList.remove('bg-light', 'text-dark');
+            }
+        });
+    }
+    const filterAll = document.getElementById('filterAllBadge');
+    if (filterAll) filterAll.classList.toggle('bg-primary', !industry);
+    Object.keys(_chartInstances).forEach(function(key) {
+        var entry = _chartInstances[key];
+        if (entry && entry.chart) ChartResizeManager.dispose(entry.chart, entry.dom);
+    });
+    _chartInstances = {};
+    const grid = document.getElementById('allChartsGrid');
+    if (!grid) return;
+    if (filtered.length === 0) {
+        grid.innerHTML = '<div class="col-12 text-center py-5 text-muted fade-in-up">'
+            + '<i class="bi bi-info-circle display-3 d-block mb-3 opacity-50"></i>'
+            + '<h6>「' + industry + '」暂无匹配股票</h6>'
+            + '<p class="small">该行业尚未关联代表性A股标的，请尝试其他行业</p></div>';
+        if (document.getElementById('statusText')) document.getElementById('statusText').textContent = '该行业无匹配股票';
+        return;
+    }
+    grid.innerHTML = filtered.map(function(s) { return '<div class="col-12" id="card-' + s.symbol + '"><div class="text-center py-4"><div class="spinner-border spinner-border-sm text-secondary"></div><p class="text-muted small mt-1">' + s.name + ' 加载中...</p></div></div>'; }).join('');
+    loadPredictionsForStocks(filtered);
+}
+
+async function loadAllPredictions() {
+    const grid = document.getElementById('allChartsGrid');
+    if (!grid) return;
+    // Abort any in-flight requests from previous load
+    _activeAbortControllers.forEach(function(c) { try { c.abort(); } catch(e) {} });
+    _activeAbortControllers.clear();
+    Object.keys(_chartInstances).forEach(function(key) {
+        var entry = _chartInstances[key];
+        if (entry && entry.chart) ChartResizeManager.dispose(entry.chart, entry.dom);
+    });
+    _chartInstances = {};
+    const all = window._allHotStocks || hotStocksData;
+    const filtered = _currentIndustryFilter ? all.filter(function(s) { return s.industry===_currentIndustryFilter || s.reason.includes(_currentIndustryFilter); }) : all;
+    grid.innerHTML = filtered.map(function(s) { return '<div class="col-12" id="card-' + s.symbol + '"><div class="text-center py-4"><div class="spinner-border spinner-border-sm text-secondary"></div><p class="text-muted small mt-1">' + s.name + ' 加载中...</p></div></div>'; }).join('');
+    loadPredictionsForStocks(filtered);
+}
+
+// ════════════════ TWO-PHASE LOAD: Quick → Full LLM upgrade ═════════
+async function loadPredictionsForStocks(stocks) {
+    const horizonEl = document.getElementById('horizonSelect');
+    const horizon = horizonEl ? horizonEl.value : 'T+3';
+    const statusEl = document.getElementById('statusText');
+    let done = 0;
+
+    // ── Pre-render cached stocks ──
+    var uncachedStocks = [];
+    for (var si = 0; si < stocks.length; si++) {
+        var stock = stocks[si];
+        var cacheKey = stock.symbol + '_' + horizon;
+        if (_predictionDataCache[cacheKey]) {
+            var cached = Object.assign({}, _predictionDataCache[cacheKey]);
+            cached._hot_events = stock.related_events || [];
+            cached._hot_reason = stock.reason || '';
+            cached._from_cache = true;
+            renderCompactCard(cached, 'card-' + stock.symbol, false);
+            done++;
+        } else {
+            uncachedStocks.push(stock);
+        }
+    }
+    if (statusEl && done > 0) {
+        statusEl.textContent = '已加载 ' + done + '/' + stocks.length + ' 只股票（缓存）';
+    }
+    if (uncachedStocks.length === 0) {
+        if (statusEl) statusEl.textContent = '✅ ' + stocks.length + ' 只股票已就绪 · 点击「深度分析」获取LLM预测';
+        return;
+    }
+
+    // ═══════════ PHASE 1: Quick mode — instant render < 2s ═══════════
+    if (statusEl) statusEl.innerHTML = '⚡ 快速加载中... <small class="text-muted">可自由切换其他功能</small>';
+
+    await _loadBatch(uncachedStocks, horizon, 'quick', 4, statusEl);
+
+    // ═══════════ PHASE 2: Full LLM upgrade — background, 2 concurrent ═══
+    if (statusEl) statusEl.innerHTML = '🔄 后台LLM深度分析中... <small class="text-muted">可自由切换其他功能</small>';
+
+    await _loadBatch(uncachedStocks, horizon, 'full', 2, statusEl);
+
+    if (statusEl) statusEl.textContent = '✅ ' + stocks.length + ' 只股票深度分析完成';
+    _persistCache();
+}
+
+// ── Batch loader with controlled concurrency ────────────────────────
+async function _loadBatch(stocks, horizon, mode, concurrency, statusEl) {
+    var doneCount = 0;
+    var total = stocks.length;
+
+    async function loadOne(stock) {
+        var cacheKey = stock.symbol + '_' + horizon;
+        try {
+            var controller = new AbortController();
+            _activeAbortControllers.add(controller);
+            var timeoutId = setTimeout(function() { controller.abort(); }, 20000);
+            var url = '/api/v1/prediction/predict/' + stock.symbol + '?horizon=' + horizon + '&mode=' + mode;
+            var events = stock.related_events || [];
+            if (events.length > 0 && events[0].event_id) url += '&event_id=' + events[0].event_id;
+            var resp = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            _activeAbortControllers.delete(controller);
+            var d = await resp.json();
+            if (d.success) {
+                d.data._mode = mode;
+                // Only overwrite cache if upgrading (quick→full) or no cache exists
+                if (mode === 'full' || !_predictionDataCache[cacheKey] || (_predictionDataCache[cacheKey]._mode !== 'full')) {
+                    _predictionDataCache[cacheKey] = d.data;
+                    _persistCache();
+                }
+                d.data._hot_events = stock.related_events || [];
+                d.data._hot_reason = stock.reason || '';
+                renderCompactCard(d.data, 'card-' + stock.symbol, false);
+            } else if (mode === 'quick') {
+                // Quick mode failed — show placeholder, don't block full mode
+                var el = document.getElementById('card-' + stock.symbol);
+                if (el) el.innerHTML = '<div class="alert alert-warning small py-2">' + stock.name + '(' + stock.symbol + '): 数据获取中...</div>';
+            }
+        } catch(e) {
+            _activeAbortControllers.forEach(function(c) { if (c.signal.aborted) _activeAbortControllers.delete(c); });
+            if (e.name !== 'AbortError' && mode !== 'quick') {
+                var el = document.getElementById('card-' + stock.symbol);
+                if (el) el.innerHTML = '<div class="alert alert-warning small py-2">' + stock.name + '(' + stock.symbol + '): 网络错误</div>';
+            }
+        }
+        doneCount++;
+        if (statusEl) {
+            var prefix = mode === 'quick' ? '⚡ 快速加载' : '🔄 LLM深度分析';
+            statusEl.innerHTML = prefix + ' ' + doneCount + '/' + total + ' <small class="text-muted">可自由切换其他功能</small>';
+        }
+    }
+
+    // Semaphore: run up to `concurrency` fetches at a time
+    var queue = stocks.slice();
+    async function worker() {
+        while (queue.length > 0) {
+            var stock = queue.shift();
+            if (stock) await loadOne(stock);
+        }
+    }
+    var workers = [];
+    for (var w = 0; w < Math.min(concurrency, stocks.length); w++) {
+        workers.push(worker());
+    }
+    await Promise.allSettled(workers);
+}
+
+// ═══════════════════════ RENDER COMPACT CHART CARD ═════════════════
+function renderCompactCard(d, containerId, isFullWidth) {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+
+    const dirLabel = {bullish:'看涨 ↑', bearish:'看跌 ↓', neutral:'震荡 ↔'};
+    const dirBadge = {bullish:'danger', bearish:'success', neutral:'secondary'};
+    const borderClass = {bullish:'prediction-bullish', bearish:'prediction-bearish', neutral:'prediction-neutral'};
+
+    const hasChart = d.chart_data && d.chart_data.kline && d.chart_data.kline.dates && d.chart_data.kline.dates.length > 0;
+    const chartId = 'chart-' + containerId;
+    const chartHeight = isFullWidth ? '500px' : '320px';
+    const isQuickMode = d._mode === 'quick';
+    const isFromCache = d._from_cache === true;
+
+    let html = '<div class="card shadow-sm h-100 ' + borderClass[d.direction] + ' fade-in-up">';
+    html += '<div class="card-body p-3">';
+
+    // Header row
+    html += '<div class="d-flex justify-content-between align-items-start mb-2">';
+    html += '<div><strong>' + (d.name||d.symbol) + '</strong> <small class="text-muted">' + d.symbol + '</small>';
+    if (d._hot_events && d._hot_events.length) {
+        html += '<br><small class="pred-hot-reason">' + (d._hot_reason||'') + '</small>';
+    }
+    html += '</div>';
+    html += '<div class="text-end">';
+    html += '<span class="badge bg-' + dirBadge[d.direction] + '">' + dirLabel[d.direction] + '</span>';
+    if (isQuickMode) {
+        html += '<br><span class="badge bg-warning text-dark small">⚡快速</span>';
+    }
+    html += '<br><small class="fw-bold">' + (d.confidence*100).toFixed(0) + '% 置信</small>';
+    html += '</div>';
+    html += '</div>';
+
+    // Chart
+    if (hasChart) {
+        html += '<div id="' + chartId + '" style="width:100%;max-width:100%;height:' + chartHeight + ';overflow:hidden;border:1px solid var(--border-subtle);border-radius:6px"></div>';
+    } else {
+        html += '<div class="text-center py-3 text-muted small" style="height:' + chartHeight + '"><i class="bi bi-bar-chart display-4 d-block mb-1"></i>暂无K线数据<br><small>AKShare 上游暂不可用</small></div>';
+    }
+
+    // Target row
+    html += '<div class="row g-2 mt-2">';
+    html += '<div class="col-6"><small class="text-muted">🎯 目标区间</small><br><strong>';
+    if (d.target_low && d.target_high) {
+        html += d.target_low.toFixed(2) + ' ~ ' + d.target_high.toFixed(2);
+    } else {
+        html += '<span class="text-muted">计算中...</span>';
+    }
+    html += '</strong></div>';
+    html += '<div class="col-6"><small class="text-muted">📊 周期</small><br><strong>' + d.time_horizon + '</strong></div>';
+    html += '</div>';
+
+    // Key factors (compact)
+    if (d.key_factors && d.key_factors.length) {
+        html += '<div class="mt-2">';
+        d.key_factors.slice(0,2).forEach(function(f) {
+            const pct = ((f.contribution||0)*100).toFixed(0);
+            html += '<div class="d-flex justify-content-between small"><span>' + f.dimension + '</span><span>' + pct + '%</span></div>';
+            html += '<div class="progress mb-1" style="height:3px"><div class="progress-bar" style="width:' + pct + '%"></div></div>';
+        });
+        html += '</div>';
+    }
+
+    // Risk flags (inline)
+    if (d.risk_flags && d.risk_flags.length) {
+        html += '<div class="mt-1">';
+        d.risk_flags.slice(0,2).forEach(function(r) { html += '<span class="badge bg-light text-dark border small me-1">⚠ ' + r + '</span>'; });
+        html += '</div>';
+    }
+
+    // Action buttons row
+    html += '<div class="mt-2 d-flex gap-1">';
+    if (isQuickMode || (isFromCache && d._mode !== 'full')) {
+        html += '<button class="btn btn-sm btn-outline-primary py-0" onclick="event.stopPropagation();upgradeToFull(\'' + d.symbol + '\',\'' + d.time_horizon + '\')" title="使用LLM深度分析该股票">🤖 深度分析</button>';
+    }
+    html += '<button class="btn btn-sm btn-outline-secondary py-0" onclick="event.stopPropagation();quickPredict(\'' + d.symbol + '\',\'' + (d.name||'') + '\')" title="查看该股票完整分析">🔍 全屏</button>';
+    html += '</div>';
+
+    html += '</div></div>';
+    el.innerHTML = html;
+
+    // Render chart if data available
+    if (hasChart) {
+        setTimeout(function() { renderCompactChart(d, chartId); }, 50);
+    }
+}
+
+// ── Upgrade a single stock from quick→full LLM prediction ──────────
+async function upgradeToFull(symbol, horizon) {
+    var cardEl = document.getElementById('card-' + symbol);
+    if (!cardEl) return;
+    var btn = cardEl.querySelector('button');
+    if (btn) { btn.disabled = true; btn.textContent = '分析中...'; }
+
+    try {
+        var controller = new AbortController();
+        _activeAbortControllers.add(controller);
+        var url = '/api/v1/prediction/predict/' + symbol + '?horizon=' + horizon + '&mode=full';
+        var stock = (window._allHotStocks||hotStocksData).find(function(s) { return s.symbol === symbol; });
+        var events = stock ? (stock.related_events || []) : [];
+        if (events.length > 0 && events[0].event_id) url += '&event_id=' + events[0].event_id;
+        var resp = await fetch(url, { signal: controller.signal });
+        _activeAbortControllers.delete(controller);
+        var d = await resp.json();
+        if (d.success) {
+            d.data._mode = 'full';
+            var cacheKey = symbol + '_' + horizon;
+            _predictionDataCache[cacheKey] = d.data;
+            _persistCache();
+            // Preserve hot context
+            var stock = (window._allHotStocks||hotStocksData).find(function(s) { return s.symbol === symbol; });
+            d.data._hot_events = stock ? (stock.related_events || []) : [];
+            d.data._hot_reason = stock ? (stock.reason || '') : '';
+            renderCompactCard(d.data, 'card-' + symbol, false);
+        } else {
+            if (btn) { btn.disabled = false; btn.textContent = '🤖 重试'; }
+        }
+    } catch(e) {
+        _activeAbortControllers.forEach(function(c) { if (c.signal.aborted) _activeAbortControllers.delete(c); });
+        if (btn && e.name !== 'AbortError') { btn.disabled = false; btn.textContent = '🤖 重试'; }
+    }
+}
+
+// ═══════════════════════ COMPACT ECHART RENDERER ═══════════════════
+function renderCompactChart(d, domId) {
+    var dom = document.getElementById(domId);
+    if (!dom) return;
+    var chartData = d.chart_data;
+    var k = chartData.kline;
+    var ma = chartData.ma || {};
+    var rawDates = k.dates || [];
+    if (!rawDates.length) { dom.innerHTML = '<div class="text-center py-3 text-muted small">暂无K线数据</div>'; return; }
+
+    var dates = [], ohlc = [], ma5 = [], ma20 = [], ma60 = [];
+    for (var i = 0; i < rawDates.length; i++) {
+        var o = +k.open[i], c = +k.close[i], l = +k.low[i], h = +k.high[i];
+        if (!o || !c || !l || !h || o <= 0 || c <= 0 || l <= 0 || h <= 0) continue;
+        dates.push(rawDates[i]);
+        ohlc.push([o, c, l, h]);
+        ma5.push(ma.ma5 && ma.ma5[i] != null ? +ma.ma5[i] : '-');
+        ma20.push(ma.ma20 && ma.ma20[i] != null ? +ma.ma20[i] : '-');
+        ma60.push(ma.ma60 && ma.ma60[i] != null ? +ma.ma60[i] : '-');
+    }
+    if (!ohlc.length) { dom.innerHTML = '<div class="text-center py-3 text-muted small">暂无有效K线数据</div>'; return; }
+
+    var lastClose = ohlc[ohlc.length - 1][1];
+    var tLow = (d.target_low > 0) ? +d.target_low : +(lastClose * 0.97).toFixed(2);
+    var tHigh = (d.target_high > 0) ? +d.target_high : +(lastClose * 1.03).toFixed(2);
+    if (!(tLow > 0 && tHigh > tLow)) { tLow = +(lastClose * 0.97).toFixed(2); tHigh = +(lastClose * 1.03).toFixed(2); }
+    var midT = +((tLow + tHigh) / 2).toFixed(2);
+
+    var hDays = {'T+1':1,'T+3':3,'T+7':7}[d.time_horizon]||3;
+    var futureDates = generateFutureTradingDays(dates[dates.length-1], hDays);
+    var allDates = dates.concat(futureDates);
+    var realLen = dates.length;
+    var fLen = futureDates.length || 1;
+
+    while (ohlc.length < allDates.length) ohlc.push('-');
+    while (ma5.length < allDates.length) ma5.push('-');
+    while (ma20.length < allDates.length) ma20.push('-');
+    while (ma60.length < allDates.length) ma60.push('-');
+
+    var proj = [];
+    for (var j = 0; j < allDates.length; j++) {
+        if (j < realLen - 1) proj.push('-');
+        else if (j === realLen - 1) proj.push(lastClose);
+        else { var t = (j - realLen + 1) / fLen; proj.push(+(lastClose + (midT - lastClose) * t).toFixed(2)); }
+    }
+
+    dom.innerHTML = '';
+    try {
+        var ex = echarts.getInstanceByDom(dom);
+        if (ex) ChartResizeManager.dispose(ex, dom);
+    } catch(e) {}
+    var chart;
+    try { chart = echarts.init(dom); } catch(e) { dom.innerHTML = '<div class="text-center py-3 text-muted small">图表初始化失败</div>'; return; }
+
+    var opt = {
+        tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+        grid: { left: '8%', right: '4%', top: '8%', bottom: '5%' },
+        xAxis: { type: 'category', data: allDates, axisLabel: { rotate: 20, fontSize: 9 } },
+        yAxis: { type: 'value', scale: true, splitLine: { lineStyle: { color: document.documentElement.hasAttribute('data-theme') ? 'rgba(0,0,0,0.06)' : '#f1f5f9' } } },
+        series: [
+            { type: 'candlestick', data: ohlc, itemStyle: { color: '#dc3545', color0: '#198754', borderColor: '#dc3545', borderColor0: '#198754' } },
+            { type: 'line', data: ma5, smooth: true, lineStyle: { width: 1, color: '#f59e0b' }, symbol: 'none', silent: true },
+            { type: 'line', data: ma20, smooth: true, lineStyle: { width: 1, color: '#8b5cf6' }, symbol: 'none', silent: true },
+            { type: 'line', data: ma60, smooth: true, lineStyle: { width: 1, color: '#06b6d4' }, symbol: 'none', silent: true },
+            { type: 'line', data: proj, smooth: true, lineStyle: { width: 2, color: '#f59e0b', type: 'dashed' }, symbol: 'none', silent: true }
+        ]
+    };
+
+    if (isFinite(tLow) && isFinite(tHigh) && tLow > 0 && tHigh > tLow) {
+        opt.series[0].markLine = {
+            silent: true, symbol: 'none', lineStyle: { type: 'dashed', width: 1 },
+            data: [
+                { yAxis: tHigh, lineStyle: { color: '#ef4444' }, label: { color: '#ef4444', fontSize: 9, formatter: tHigh.toFixed(2) } },
+                { yAxis: tLow, lineStyle: { color: '#22c55e' }, label: { color: '#22c55e', fontSize: 9, formatter: tLow.toFixed(2) } }
+            ]
+        };
+        var dir = d.direction || 'neutral';
+        var zoneCol = dir === 'bullish' ? 'rgba(220,53,69,0.08)' : dir === 'bearish' ? 'rgba(34,197,94,0.08)' : 'rgba(148,163,184,0.06)';
+        opt.series[0].markArea = {
+            silent: true,
+            label: { show: true, position: 'insideTop', fontSize: 10, color: '#f59e0b' },
+            data: [[
+                { xAxis: dates[realLen-1], yAxis: tLow, itemStyle: { color: zoneCol, borderColor: 'rgba(148,163,184,0.3)', borderWidth: 1, borderType: 'dashed' } },
+                { xAxis: futureDates[fLen-1]||dates[realLen-1], yAxis: tHigh }
+            ]]
+        };
+    }
+
+    chart.setOption(opt);
+    ChartResizeManager.observe(chart, dom);
+    _chartInstances[domId] = { chart: chart, dom: dom };
+}
+
+function generateFutureTradingDays(lastDateStr, days) {
+    if (!lastDateStr) return [];
+    const dates = []; let current = new Date(lastDateStr); let added = 0;
+    while (added < days) {
+        current = new Date(current.getTime()+86400000);
+        const dow = current.getDay();
+        if (dow!==0 && dow!==6) { added++; dates.push(current.getFullYear() + '-' + String(current.getMonth()+1).padStart(2,'0') + '-' + String(current.getDate()).padStart(2,'0')); }
+    }
+    return dates;
+}
+
+// ═══════════════════════ INIT + CLEANUP ═══════════════════════════
+document.addEventListener('DOMContentLoaded', function() { loadHotStocks(); });
+// For SPA: immediately call loadHotStocks if DOM is already ready
+if (document.readyState !== 'loading') loadHotStocks();
+
+window._pageDestroy = function() {
+    // Abort all in-flight prediction requests
+    _activeAbortControllers.forEach(function(c) { try { c.abort(); } catch(e) {} });
+    _activeAbortControllers.clear();
+    // Dispose all chart instances
+    Object.keys(_chartInstances).forEach(function(key) {
+        var entry = _chartInstances[key];
+        if (entry && entry.chart) ChartResizeManager.dispose(entry.chart, entry.dom);
+    });
+    _chartInstances = {};
+    _persistCache();
+};
+
+// ── Expose to global scope for inline onclick (SPA IIFE-safe) ──
+window.searchStocks = searchStocks;
+window.selectStock = selectStock;
+window.quickPredict = quickPredict;
+window.filterByIndustry = filterByIndustry;
+window.loadAllPredictions = loadAllPredictions;
+window.upgradeToFull = upgradeToFull;
+window.onHorizonChange = onHorizonChange;
+</script>

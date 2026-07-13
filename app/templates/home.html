@@ -1,0 +1,590 @@
+{% extends "base.html" %}
+{% block title %}BubbleEvent — 投资研究终端{% endblock %}
+{% block page_title %}BubbleEvent{% endblock %}
+{% block topbar_actions %}
+<span id="liveClock" class="num" style="font-size:0.85rem;color:var(--text-muted)"></span>
+{% endblock %}
+
+{% block content %}
+
+<!-- ═══════════════════════ BUBBLE LAYER ═══════════════════════ -->
+<div class="bubble-layer" id="bubbleLayer" aria-hidden="true"></div>
+
+<!-- ═══════════════════════ FROSTED GLASS BACKDROP ═══════════════════════ -->
+<div class="home-glass" id="homeGlass"></div>
+
+<!-- ═══════════════════════ CHAT PAGE LAYOUT ═══════════════════════ -->
+<div class="home-page-layout" id="homePageLayout">
+
+    <!-- Compact header (shrinks when chatting) -->
+    <header class="home-header" id="homeHeader">
+        <div class="home-header-icon">◆</div>
+        <h1 class="home-header-title"><span class="accent">BubbleEvent</span></h1>
+        <p class="home-header-tagline">热点事件驱动 · AI 多维分析 · 实时市场监控</p>
+        <div class="home-header-actions">
+            <button class="home-header-btn" id="homeBtnHistory" title="历史对话"><i class="bi bi-clock-history"></i></button>
+            <button class="home-header-btn" id="homeBtnNewChat" title="新对话"><i class="bi bi-plus-lg"></i></button>
+        </div>
+    </header>
+
+    <!-- Session history dropdown -->
+    <div class="home-session-panel" id="homeSessionPanel" style="display:none">
+        <div class="home-session-panel-header">
+            <span class="home-session-panel-title">历史对话</span>
+            <button class="home-session-clear-all" id="homeClearAllBtn" title="清空所有对话">清空全部</button>
+        </div>
+        <div class="home-session-panel-body" id="homeSessionItems">
+            <div class="text-center text-muted" style="font-size:0.72rem;padding:16px">加载中...</div>
+        </div>
+        <div class="home-session-panel-footer" id="homeSessionFooter" style="display:none">
+            <button class="home-session-load-more" id="homeLoadMoreBtn">加载更多...</button>
+        </div>
+    </div>
+
+    <!-- Main chat body — expands to fill available space -->
+    <main class="home-chat-main" id="homeChatMain">
+        <div class="home-chat-body" id="homeChatBody">
+            <div class="home-chat-empty" id="homeChatEmpty">
+                <div class="home-chat-empty-icon">◆</div>
+                <h2 class="home-chat-empty-title">有什么可以帮你？</h2>
+                <p class="home-chat-empty-desc">基于实时事件与行情数据的 AI 智能分析</p>
+            </div>
+        </div>
+    </main>
+
+    <!-- Bottom area: suggestions + input -->
+    <footer class="home-input-area" id="homeInputArea">
+        <!-- Suggestion chips (below chat, above input) -->
+        <div class="home-suggestions" id="homeSuggestions">
+            <button class="home-suggestion-chip" data-prompt="帮我总结今天全球市场的重要动态和热点事件">
+                <span class="chip-icon">🌍</span><span class="chip-title">今日市场总结</span>
+            </button>
+            <button class="home-suggestion-chip" data-prompt="分析最近S级和A级热点事件对各个行业的影响">
+                <span class="chip-icon">🔥</span><span class="chip-title">热点事件分析</span>
+            </button>
+            <button class="home-suggestion-chip" data-prompt="基于近期热点事件，预测未来一周的行业走势">
+                <span class="chip-icon">📈</span><span class="chip-title">行业走势预测</span>
+            </button>
+            <button class="home-suggestion-chip" data-prompt="结合当前事件和行情数据，识别潜在投资风险">
+                <span class="chip-icon">⚠️</span><span class="chip-title">风险预警</span>
+            </button>
+            <button class="home-suggestion-chip" data-prompt="生成本周投资研究简报，包含市场总览、热点事件和行业分析">
+                <span class="chip-icon">📋</span><span class="chip-title">生成投资简报</span>
+            </button>
+            <button class="home-suggestion-chip" data-prompt="查找与当前热点事件关联度最高的上市公司">
+                <span class="chip-icon">🔍</span><span class="chip-title">热点关联股票</span>
+            </button>
+        </div>
+
+        <!-- Input row -->
+        <div class="home-input-row" id="homeInputContainer">
+            <textarea
+                class="home-prompt-input"
+                id="homePromptInput"
+                placeholder="询问任何市场问题..."
+                rows="1"
+                autofocus
+            ></textarea>
+            <button class="home-submit-btn" id="homeSubmitBtn" title="发送提问 (Enter)">
+                <i class="bi bi-arrow-up-circle-fill"></i>
+            </button>
+        </div>
+        <p class="home-input-hint">Enter 发送 · Shift+Enter 换行 · 内容由 AI 生成，仅供参考</p>
+    </footer>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Bubble events data ───────────────────────────────────────────
+const BUBBLE_EVENTS = {{ bubble_events|tojson|safe }};
+
+// ── Live clock ──────────────────────────────────────────────────
+function updateClock() {
+    var now = new Date();
+    var str = now.toLocaleString('zh-CN', {
+        year:'numeric', month:'2-digit', day:'2-digit',
+        hour:'2-digit', minute:'2-digit', second:'2-digit',
+        hour12: false
+    });
+    var el = document.getElementById('liveClock');
+    if (el) el.textContent = '🕐 ' + str;
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+// ── Elastic Bubble Physics with Collisions ──────────────────────
+(function() {
+    var layer = document.getElementById('bubbleLayer');
+    if (!layer) return;
+
+    // Fallback: if no events exist, create placeholder bubbles so the background never goes empty
+    if (!BUBBLE_EVENTS.length) {
+        BUBBLE_EVENTS.push(
+            {title: 'BubbleEvent 投资研究终端', level: 'S', event_id: 'placeholder-1'},
+            {title: '热点事件驱动分析系统', level: 'A', event_id: 'placeholder-2'},
+            {title: 'AI Bubble网络', level: 'B', event_id: 'placeholder-3'},
+            {title: '智能行情走势预测', level: 'S', event_id: 'placeholder-4'},
+            {title: '每日投资研究简报', level: 'A', event_id: 'placeholder-5'}
+        );
+    }
+
+    var bubbles = [];
+    var MAX_BUBBLES = 18;
+
+    // ── Physics constants ──────────────────────────────────────────
+    var RESTITUTION = 0.30;      // collision bounciness
+    var WOBBLE_K   = 2.0;        // soft spring toward wobble path
+    var SQUASH_K   = 4.0;        // slower recovery → deformation lingers
+    var MAX_SQUASH  = 0.55;
+    var SQUASH_DAMPING = 4.5;    // underdamped → overshoot + oscillation
+    var INITIAL_SQUASH_RANGE = 0.22;
+
+    var events = BUBBLE_EVENTS.slice();
+    function pickEvent() {
+        if (!events.length) events = BUBBLE_EVENTS.slice();
+        return events[Math.floor(Math.random() * events.length)];
+    }
+
+    function _makeBubbleParams(evt, startY) {
+        // ── Depth tier ──────────────────────────────────────────
+        var roll = Math.random();
+        var depth, size, speed, blurPx, textOpacity, bodyOpacity, wobbleAmpPct;
+        if (roll < 0.25) {
+            depth = 'near';
+            size = 140 + Math.random() * 60;
+            speed = 12 + Math.random() * 10;
+            blurPx = 4 + Math.random() * 6;
+            textOpacity = 0.65 + Math.random() * 0.2;
+            bodyOpacity = 0.72 + Math.random() * 0.2;
+            wobbleAmpPct = 0.6 + Math.random() * 1.6;
+        } else if (roll < 0.60) {
+            depth = 'mid';
+            size = 100 + Math.random() * 50;
+            speed = 8 + Math.random() * 8;
+            blurPx = 10 + Math.random() * 8;
+            textOpacity = 0.42 + Math.random() * 0.2;
+            bodyOpacity = 0.48 + Math.random() * 0.22;
+            wobbleAmpPct = 0.3 + Math.random() * 1.0;
+        } else {
+            depth = 'far';
+            size = 70 + Math.random() * 40;
+            speed = 4 + Math.random() * 7;
+            blurPx = 18 + Math.random() * 10;
+            textOpacity = 0.20 + Math.random() * 0.18;
+            bodyOpacity = 0.25 + Math.random() * 0.2;
+            wobbleAmpPct = 0.1 + Math.random() * 0.6;
+        }
+
+        var baseX = Math.random() * 100;
+        var wobbleFreq = 0.4 + Math.random() * 1.0;
+        var phase = Math.random() * Math.PI * 2;
+        var breatheAmp = depth === 'near' ? (0.02 + Math.random() * 0.03)
+                       : depth === 'mid'  ? (0.012 + Math.random() * 0.02)
+                       : (0.006 + Math.random() * 0.012);
+        var breatheFreq = 0.3 + Math.random() * 0.6;
+
+        var initSquashX = 1 + (Math.random() - 0.5) * INITIAL_SQUASH_RANGE * 2;
+        var initSquashY = 1 + (Math.random() - 0.5) * INITIAL_SQUASH_RANGE * 2;
+
+        return {
+            evt: evt, depth: depth,
+            size: size, radius: size / 2,
+            speed: speed, blurPx: blurPx,
+            textOpacity: textOpacity, bodyOpacity: bodyOpacity,
+            wobbleAmpPct: wobbleAmpPct, wobbleFreq: wobbleFreq,
+            baseX: baseX, phase: phase,
+            breatheAmp: breatheAmp, breatheFreq: breatheFreq,
+            initSquashX: initSquashX, initSquashY: initSquashY,
+            startY: (startY != null ? startY : 110 + Math.random() * 20)
+        };
+    }
+
+    function _applyBubbleDOM(el, p) {
+        el.setAttribute('data-level', p.evt.level);
+        el.setAttribute('data-depth', p.depth);
+        el.style.width = p.size + 'px';
+        el.style.height = p.size + 'px';
+        el.style.fontSize = (p.size * 0.11) + 'px';
+        el.style.backdropFilter = 'blur(' + p.blurPx.toFixed(1) + 'px) saturate(1.4)';
+        el.style.webkitBackdropFilter = 'blur(' + p.blurPx.toFixed(1) + 'px) saturate(1.4)';
+        el.style.opacity = p.bodyOpacity;
+        el.style.setProperty('--text-opacity', p.textOpacity);
+        // Update child text content (reuse child nodes)
+        var chip = el.querySelector('.bubble-chip');
+        var title = el.querySelector('.bubble-title');
+        if (chip) chip.textContent = p.evt.level + '级';
+        if (title) title.textContent = p.evt.title.length > 20 ? p.evt.title.slice(0, 20) + '…' : p.evt.title;
+    }
+
+    function _bubbleState(el, p) {
+        return {
+            el: el, depth: p.depth,
+            size: p.size, radius: p.radius,
+            xPct: p.baseX,
+            yPct: p.startY,
+            vx: (Math.random() - 0.5) * 2,
+            vy: -p.speed,
+            baseX: p.baseX,
+            wobbleAmpPct: p.wobbleAmpPct,
+            wobbleFreq: p.wobbleFreq,
+            phase: p.phase,
+            breatheAmp: p.breatheAmp,
+            breatheFreq: p.breatheFreq,
+            blurPx: p.blurPx,
+            bodyOpacity: p.bodyOpacity,
+            textOpacity: p.textOpacity,
+            squashX: p.initSquashX,
+            squashY: p.initSquashY,
+            squashVX: 0,
+            squashVY: 0,
+            desiredSX: p.initSquashX,
+            desiredSY: p.initSquashY
+        };
+    }
+
+    function createBubble(startY) {
+        var evt = pickEvent();
+        var p = _makeBubbleParams(evt, startY);
+
+        var el = document.createElement('div');
+        el.className = 'event-bubble';
+        el.setAttribute('data-level', evt.level);
+        el.setAttribute('data-depth', p.depth);
+
+        var chip = document.createElement('span');
+        chip.className = 'bubble-chip';
+        chip.textContent = evt.level + '级';
+        el.appendChild(chip);
+
+        var title = document.createElement('span');
+        title.className = 'bubble-title';
+        title.textContent = evt.title.length > 20 ? evt.title.slice(0, 20) + '…' : evt.title;
+        el.appendChild(title);
+
+        _applyBubbleDOM(el, p);
+        layer.appendChild(el);
+
+        return _bubbleState(el, p);
+    }
+
+    // Initialize
+    for (var i = 0; i < MAX_BUBBLES; i++) {
+        bubbles.push(createBubble(105 + Math.random() * 130));
+    }
+
+    // ── Animation Loop ──────────────────────────────────────────
+    var startTime = performance.now();
+    var lastFrame = startTime;
+    var _rafId = null;
+    var _paused = false;
+
+    function tick(now) {
+        // Read viewport dimensions once per frame (cached by browser, near-zero cost)
+        var vw = window.innerWidth;
+        var vh = window.innerHeight;
+        var dt = Math.min((now - lastFrame) / 1000, 0.05); // cap 50ms
+        lastFrame = now;
+        var elapsed = (now - startTime) / 1000;
+        var n = bubbles.length;
+
+        // ── Phase 1: Integrate + spring wobble ────────────────
+        for (var i = 0; i < n; i++) {
+            var b = bubbles[i];
+
+            // Wobble target (sine wave around baseX)
+            var wobbleTarget = b.baseX + Math.sin(elapsed * b.wobbleFreq + b.phase) * b.wobbleAmpPct;
+            // Spring vx toward wobble target
+            b.vx += (wobbleTarget - b.xPct) * WOBBLE_K * dt;
+
+            // Integrate position
+            b.xPct += b.vx * dt;
+            b.yPct += b.vy * dt;
+
+            // Clamp horizontal (keep in view with bounce)
+            if (b.xPct < -5)  { b.xPct = -5;  b.vx = Math.abs(b.vx) * 0.5; }
+            if (b.xPct > 105) { b.xPct = 105; b.vx = -Math.abs(b.vx) * 0.5; }
+
+            // ── Second-order squash recovery (damped oscillator) ──
+            // Target: blend collision-driven desired with neutral (1.0)
+            var tx = Math.min(b.desiredSX, 1.0);
+            var ty = Math.min(b.desiredSY, 1.0);
+            // Spring accel toward target, with damping
+            b.squashVX += ((tx - b.squashX) * SQUASH_K - b.squashVX * SQUASH_DAMPING) * dt;
+            b.squashVY += ((ty - b.squashY) * SQUASH_K - b.squashVY * SQUASH_DAMPING) * dt;
+            b.squashX += b.squashVX * dt;
+            b.squashY += b.squashVY * dt;
+            // Volume preservation: keep product near 1
+            var vol = b.squashX * b.squashY;
+            if (Math.abs(vol - 1) > 0.005) {
+                var corr = 1 / Math.sqrt(Math.max(vol, 0.25));
+                b.squashX *= corr; b.squashY *= corr;
+                b.squashVX *= corr; b.squashVY *= corr;
+            }
+            // Reset desired for next frame (will be set by collisions)
+            b.desiredSX = 1.0;
+            b.desiredSY = 1.0;
+        }
+
+        // ── Phase 2: Collision detection (same depth only) ────
+        for (var i = 0; i < n; i++) {
+            for (var j = i + 1; j < n; j++) {
+                var a = bubbles[i];
+                var bb = bubbles[j];
+                if (a.depth !== bb.depth) continue; // different depth = pass through
+
+                // Convert % → px
+                var ax = a.xPct * vw / 100;
+                var ay = a.yPct * vh / 100;
+                var bx = bb.xPct * vw / 100;
+                var by = bb.yPct * vh / 100;
+
+                var dx = ax - bx;
+                var dy = ay - by;
+                var dist = Math.sqrt(dx * dx + dy * dy);
+                var minDist = a.radius + bb.radius;
+
+                if (dist < minDist && dist > 0.01) {
+                    var nx = dx / dist;
+                    var ny = dy / dist;
+                    var overlap = minDist - dist;
+
+                    // Push apart equally
+                    var pushX = overlap * nx * 0.5;
+                    var pushY = overlap * ny * 0.5;
+                    a.xPct += pushX / vw * 100;
+                    a.yPct += pushY / vh * 100;
+                    bb.xPct -= pushX / vw * 100;
+                    bb.yPct -= pushY / vh * 100;
+
+                    // Relative velocity along collision normal
+                    var dvx = a.vx - bb.vx;
+                    var dvy = a.vy - bb.vy;
+                    var dvn = dvx * nx + dvy * ny;
+
+                    if (dvn > 0) {
+                        var impulse = dvn * (1 + RESTITUTION) * 0.5;
+                        a.vx -= impulse * nx;
+                        a.vy -= impulse * ny;
+                        bb.vx += impulse * nx;
+                        bb.vy += impulse * ny;
+
+                        // ── Overlap-based gradual squash (not impulse) ─
+                        var overlapRatio = overlap / minDist; // 0 .. ~0.25
+                        var squashAmt = Math.min(overlapRatio * 0.9, MAX_SQUASH);
+                        // Volume-preserving: compress along normal, expand along tangent
+                        var sn = 1 - squashAmt;
+                        var st = 1 / Math.max(sn, 0.45);  // cap expansion
+                        st = Math.min(st, 1.45);
+                        // Decompose to axis-aligned X,Y scales
+                        var sx = sn * nx * nx + st * ny * ny;
+                        var sy = sn * ny * ny + st * nx * nx;
+                        // Accumulate: take the most squished
+                        a.desiredSX = Math.min(a.desiredSX, sx);
+                        a.desiredSY = Math.min(a.desiredSY, sy);
+                        bb.desiredSX = Math.min(bb.desiredSX, sx);
+                        bb.desiredSY = Math.min(bb.desiredSY, sy);
+                    }
+                }
+            }
+        }
+
+        // ── Phase 3: Apply to DOM ──────────────────────────────
+        for (var i = 0; i < n; i++) {
+            var b = bubbles[i];
+
+            var breathe = 1 + Math.sin(elapsed * b.breatheFreq + b.phase) * b.breatheAmp;
+
+            // Fade at edges
+            var op = b.bodyOpacity;
+            if (b.yPct > 90) op = Math.max(0, b.bodyOpacity * (1 - (b.yPct - 90) / 25));
+            else if (b.yPct < 15) op = Math.max(0, b.bodyOpacity * (b.yPct / 15));
+
+            b.el.style.left = b.xPct + '%';
+            b.el.style.top = b.yPct + '%';
+            b.el.style.transform = 'translate(-50%, -50%) scaleX(' + b.squashX.toFixed(3) + ') scaleY(' + b.squashY.toFixed(3) + ') scale(' + breathe.toFixed(3) + ')';
+            b.el.style.opacity = op;
+
+            // Recycle when above viewport — reuse DOM element
+            if (b.yPct < -30) {
+                var newEvt = pickEvent();
+                var newParams = _makeBubbleParams(newEvt, 110 + Math.random() * 15);
+                _applyBubbleDOM(b.el, newParams);
+                bubbles[i] = _bubbleState(b.el, newParams);
+            }
+        }
+
+        if (!_paused) {
+            _rafId = requestAnimationFrame(tick);
+        }
+    }
+
+    // ── Start / Pause / Resume ─────────────────────────────────
+    function startLoop() {
+        _paused = false;
+        lastFrame = performance.now();
+        _rafId = requestAnimationFrame(tick);
+    }
+
+    startLoop();
+
+    // Pause when tab is hidden to save CPU
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            _paused = true;
+            if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+        } else {
+            startLoop();
+        }
+    });
+
+    // Stop loop on page unload (handles SPA navigation + bfcache)
+    window.addEventListener('pagehide', function() {
+        _paused = true;
+        if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+    });
+
+    // ── Cleanup for SPA navigation ─────────────────────────────
+    if (!window._pageDestroy) { window._pageDestroy = function(){}; }
+    var _prevDestroy = window._pageDestroy;
+    window._pageDestroy = function() {
+        _prevDestroy();
+        _paused = true;
+        if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+        if (layer) { layer.innerHTML = ''; }
+        bubbles.length = 0;
+    };
+})();
+
+// ── Central AI Input ────────────────────────────────────────────
+(function() {
+    var textarea = document.getElementById('homePromptInput');
+    var submitBtn = document.getElementById('homeSubmitBtn');
+    var container = document.getElementById('homeInputContainer');
+    if (!textarea || !submitBtn) return;
+
+    function autoResize() {
+        textarea.style.height = 'auto';
+        textarea.style.height = Math.min(textarea.scrollHeight, 160) + 'px';
+    }
+    textarea.addEventListener('input', autoResize);
+
+    // Shared: enter chat mode (frosted glass + hide chips)
+    // Exposed on window for the Suggestion Chips IIFE to call
+    window._enterHomeChatMode = function _enterHomeChatMode() {
+        if (window._chatModeActive) return;
+        window._chatModeActive = true;
+        var layout = document.getElementById('homePageLayout');
+        if (layout) layout.classList.add('chatting');
+        var glass = document.getElementById('homeGlass');
+        if (glass) glass.classList.add('chatting');
+        var chips = document.getElementById('homeSuggestions');
+        if (chips) {
+            chips.style.transition = 'opacity 0.35s ease, transform 0.35s ease, max-height 0.35s ease';
+            chips.style.opacity = '0'; chips.style.transform = 'translateY(8px)';
+            chips.style.pointerEvents = 'none'; chips.style.maxHeight = '0'; chips.style.marginBottom = '0';
+        }
+        var hint = document.querySelector('.home-input-hint');
+        if (hint) hint.style.opacity = '0';
+    };
+
+    // Exit chat mode (undo blur, restore chips)
+    window._exitHomeChatMode = function _exitHomeChatMode() {
+        if (!window._chatModeActive) return;
+        window._chatModeActive = false;
+        var layout = document.getElementById('homePageLayout');
+        if (layout) layout.classList.remove('chatting');
+        var glass = document.getElementById('homeGlass');
+        if (glass) glass.classList.remove('chatting');
+        var chips = document.getElementById('homeSuggestions');
+        if (chips) {
+            chips.style.opacity = ''; chips.style.transform = '';
+            chips.style.pointerEvents = ''; chips.style.maxHeight = ''; chips.style.marginBottom = '';
+        }
+        var hint = document.querySelector('.home-input-hint');
+        if (hint) hint.style.opacity = '';
+    };
+
+    function submitPrompt() {
+        var question = textarea.value.trim();
+        if (!question) return;
+        // If AI assistant is disabled, don't activate blur — just show hint
+        if (window._AI_ASSISTANT_ENABLED === false) {
+            if (typeof showNotification === 'function') {
+                showNotification('AI助手已关闭，可在.env中设置 ENABLE_AI_ASSISTANT=true 开启', 'warning');
+            }
+            return;
+        }
+        window._enterHomeChatMode();
+        if (window._aiWidget && typeof window._aiWidget.quickAsk === 'function') {
+            window._aiWidget.quickAsk(question);
+        }
+        textarea.value = '';
+        textarea.style.height = 'auto';
+    }
+
+    var _onKeydown = function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            submitPrompt();
+        }
+    };
+    var _onFocus = function() { container.classList.add('focused'); };
+    var _onBlur = function() { container.classList.remove('focused'); };
+    textarea.addEventListener('keydown', _onKeydown);
+    submitBtn.addEventListener('click', submitPrompt);
+    textarea.addEventListener('focus', _onFocus);
+    textarea.addEventListener('blur', _onBlur);
+
+    // SPA cleanup
+    var _prevDestroy2 = window._pageDestroy || function(){};
+    window._pageDestroy = function() {
+        _prevDestroy2();
+        textarea.removeEventListener('input', autoResize);
+        textarea.removeEventListener('keydown', _onKeydown);
+        submitBtn.removeEventListener('click', submitPrompt);
+        textarea.removeEventListener('focus', _onFocus);
+        textarea.removeEventListener('blur', _onBlur);
+    };
+})();
+
+// ── Hide toolbar when AI disabled ─────────────────────────────
+if (window._AI_ASSISTANT_ENABLED === false) {
+    var toolbar = document.querySelector('.home-header-actions');
+    if (toolbar) toolbar.style.display = 'none';
+}
+
+// ── Suggestion Chips ────────────────────────────────────────────
+(function() {
+    var chips = document.querySelectorAll('.home-suggestion-chip');
+    var input = document.getElementById('homePromptInput');
+    chips.forEach(function(chip) {
+        chip.addEventListener('click', function() {
+            var prompt = chip.getAttribute('data-prompt');
+            if (!prompt) return;
+            // If AI assistant is disabled, don't activate blur
+            if (window._AI_ASSISTANT_ENABLED === false) {
+                if (typeof window._showToast === 'function') {
+                    window._showToast('AI助手已关闭，可在.env中设置 ENABLE_AI_ASSISTANT=true 开启', 'warning');
+                }
+                return;
+            }
+            if (input) {
+                input.value = prompt;
+                input.style.height = 'auto';
+                input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+            }
+            window._enterHomeChatMode();
+            setTimeout(function() {
+                if (window._aiWidget && typeof window._aiWidget.quickAsk === 'function') {
+                    window._aiWidget.quickAsk(prompt);
+                }
+                if (input) { input.value = ''; input.style.height = 'auto'; }
+            }, 100);
+        });
+    });
+})();
+</script>
+{% endblock %}

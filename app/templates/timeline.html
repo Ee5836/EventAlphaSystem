@@ -1,0 +1,1696 @@
+{% extends "base.html" %}
+{% block title %}Bubble — BubbleEvent{% endblock %}
+{% block page_title %}🕸️ Bubble{% endblock %}
+{% block topbar_actions %}
+<select class="form-select form-select-sm" id="daysFilter" onchange="loadGraph()" style="width:120px">
+    <option value="30">近30天</option>
+    <option value="90" selected>近90天</option>
+    <option value="180">近180天</option>
+    <option value="365">近1年</option>
+</select>
+<button class="btn btn-sm btn-outline-primary" onclick="loadGraph()">🔄 刷新</button>
+<button class="btn btn-sm btn-outline-warning" onclick="rebuildTimeline()" title="清空并重建全部节点（S级优先）">🔧 重建</button>
+<button class="btn btn-sm btn-outline-secondary" onclick="takeSnapshot()">📸 快照</button>
+<div class="form-check form-check-inline ms-2 small">
+    <input class="form-check-input" type="checkbox" id="expiredToggle" onchange="loadGraph()">
+    <label class="form-check-label" for="expiredToggle">显示已过期节点</label>
+</div>
+{% endblock %}
+{% block head %}
+<style>
+.legend-item { display: inline-flex; align-items: center; gap: 4px; margin-right: 1rem; font-size: 0.85rem; }
+.legend-dot {
+    width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+    box-shadow: 0 0 6px rgba(255,255,255,0.06), inset 0 0.5px 1px rgba(255,255,255,0.12);
+}
+/* Legend glass bar — clean, sharp for readability */
+.legend-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 8px 16px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.06);
+    margin-bottom: 8px;
+}
+
+/* ═══════════════════ Timeline container & zoom animation ═══════════════ */
+#timelineGraph {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(ellipse at 50% 40%, rgba(22,28,38,0.85) 0%, rgba(10,14,18,0.95) 100%);
+    border-radius: 16px;
+    border: 1px solid rgba(255,255,255,0.06);
+    box-shadow:
+        0 4px 20px rgba(0,0,0,0.3),
+        inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+#timelineGraph .echarts-wrapper {
+    width: 100%;
+    height: 100%;
+    transition: transform 0.85s cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform;
+}
+
+/* ═══════════════════ Full-screen detail overlay ═══════════════════════ */
+#nodeDetailFullscreen {
+    position: absolute;
+    inset: 0;
+    z-index: 200;
+    display: none;
+    background: rgba(8,11,16,0.92);
+    backdrop-filter: blur(20px) saturate(1.5);
+    -webkit-backdrop-filter: blur(20px) saturate(1.5);
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-radius: 16px;
+    /* entrance handled by JS after zoom-in */
+}
+
+.detail-close-btn {
+    position: sticky;
+    top: 16px;
+    float: right;
+    z-index: 10;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(18,23,31,0.65);
+    color: #99a3b6;
+    font-size: 1.2rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.25s var(--ease-out);
+    margin-right: 16px;
+    backdrop-filter: blur(12px) saturate(1.4);
+    -webkit-backdrop-filter: blur(12px) saturate(1.4);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+.detail-close-btn:hover {
+    background: rgba(239,68,68,0.15);
+    border-color: rgba(239,68,68,0.3);
+    color: #ef4444;
+}
+
+.detail-content {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 20px 28px 60px;
+}
+
+/* ── Detail header ── */
+.detail-hero {
+    text-align: center;
+    padding: 24px 0 32px;
+}
+.detail-hero .node-icon {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    margin: 0 auto 16px;
+    box-shadow: 0 0 32px rgba(212,168,83,0.2);
+}
+.detail-hero .node-title {
+    font-size: 1.35rem;
+    font-weight: 800;
+    color: #e6e9ef;
+    line-height: 1.4;
+    max-width: 600px;
+    margin: 0 auto 8px;
+}
+.detail-hero .node-subtitle {
+    font-size: 0.82rem;
+    color: #99a3b6;
+}
+
+/* ── Meta bar ── */
+.detail-meta-bar {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 28px;
+}
+.detail-meta-pill {
+    font-size: 0.72rem;
+    padding: 4px 14px;
+    border-radius: 99px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.04);
+    backdrop-filter: blur(4px) saturate(1.2);
+    -webkit-backdrop-filter: blur(4px) saturate(1.2);
+    color: #b0b8c4;
+    white-space: nowrap;
+}
+.detail-meta-pill.confirmed { color: #22c55e; border-color: rgba(34,197,94,0.25); background: rgba(34,197,94,0.06); }
+.detail-meta-pill.predicted { color: #eab308; border-color: rgba(234,179,8,0.25); background: rgba(234,179,8,0.06); }
+.detail-meta-pill.refuted   { color: #ef4444; border-color: rgba(239,68,68,0.25); background: rgba(239,68,68,0.06); }
+.detail-meta-pill.pending   { color: #9ca3af; border-color: rgba(156,163,175,0.25); background: rgba(156,163,175,0.06); }
+
+/* ── Detail sections ── */
+.detail-section {
+    margin-bottom: 28px;
+}
+.detail-section-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: #d4a853;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.detail-section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: rgba(255,255,255,0.05);
+}
+
+/* Description block */
+.detail-desc {
+    font-size: 0.88rem;
+    color: #cbd5e1;
+    line-height: 1.7;
+    padding: 16px 20px;
+    background: rgba(255,255,255,0.025);
+    backdrop-filter: blur(8px) saturate(1.2);
+    -webkit-backdrop-filter: blur(8px) saturate(1.2);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+/* Tags */
+.detail-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.detail-tag {
+    font-size: 0.68rem;
+    padding: 3px 12px;
+    border-radius: 99px;
+    background: rgba(212,168,83,0.08);
+    color: #d4a853;
+    border: 1px solid rgba(212,168,83,0.18);
+}
+
+/* Upstream / Downstream rows */
+.detail-relation-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    margin-bottom: 6px;
+    background: rgba(255,255,255,0.02);
+    backdrop-filter: blur(4px) saturate(1.15);
+    -webkit-backdrop-filter: blur(4px) saturate(1.15);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    font-size: 0.78rem;
+    color: #b0b8c4;
+    transition: all 0.2s var(--ease-out);
+}
+.detail-relation-row:hover {
+    background: rgba(255,255,255,0.045);
+    border-color: rgba(255,255,255,0.12);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+}
+.detail-relation-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    margin-top: 4px;
+    flex-shrink: 0;
+}
+
+/* Edge cards */
+.detail-edge-card {
+    padding: 14px 16px;
+    margin-bottom: 8px;
+    background: rgba(255,255,255,0.025);
+    backdrop-filter: blur(6px) saturate(1.2);
+    -webkit-backdrop-filter: blur(6px) saturate(1.2);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px;
+    font-size: 0.76rem;
+    transition: all 0.2s var(--ease-out);
+}
+.detail-edge-card:hover {
+    background: rgba(255,255,255,0.05);
+    border-color: rgba(255,255,255,0.12);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+.detail-edge-card .edge-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+}
+.detail-edge-card .edge-reason {
+    color: #5c677d;
+    font-size: 0.7rem;
+    margin-bottom: 10px;
+    line-height: 1.5;
+}
+.detail-edge-card .edge-actions {
+    display: flex;
+    gap: 6px;
+}
+.edge-btn {
+    font-size: 0.65rem;
+    padding: 3px 12px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.02);
+    color: #99a3b6;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.edge-btn.confirm:hover { background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.25); color: #22c55e; }
+.edge-btn.refute:hover  { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.25); color: #ef4444; }
+.edge-btn.reset:hover   { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.15); color: #e6e9ef; }
+
+/* Extend button */
+.btn-extend {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    margin-top: 10px;
+    border: 1px dashed rgba(212,168,83,0.35);
+    border-radius: 12px;
+    background: rgba(212,168,83,0.05);
+    backdrop-filter: blur(4px) saturate(1.2);
+    -webkit-backdrop-filter: blur(4px) saturate(1.2);
+    color: #d4a853;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.25s var(--ease-out);
+}
+.btn-extend:hover {
+    background: rgba(212,168,83,0.12);
+    border-color: rgba(212,168,83,0.55);
+    box-shadow: 0 0 24px rgba(212,168,83,0.1);
+}
+
+/* Delete button */
+.btn-delete {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    margin-top: 8px;
+    border: 1px dashed rgba(239,68,68,0.35);
+    border-radius: 12px;
+    background: rgba(239,68,68,0.05);
+    backdrop-filter: blur(4px) saturate(1.2);
+    -webkit-backdrop-filter: blur(4px) saturate(1.2);
+    color: #ef4444;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.25s var(--ease-out);
+}
+.btn-delete:hover {
+    background: rgba(239,68,68,0.12);
+    border-color: rgba(239,68,68,0.55);
+    box-shadow: 0 0 24px rgba(239,68,68,0.1);
+}
+
+/* Loading shimmer */
+@keyframes shimmer {
+    0%   { opacity: 0.4; }
+    50%  { opacity: 0.8; }
+    100% { opacity: 0.4; }
+}
+.detail-loading {
+    text-align: center;
+    padding: 28px;
+    color: #5c677d;
+    animation: shimmer 1.2s ease-in-out infinite;
+}
+
+/* ═══════════════════ Timeline Layout (graph + sidebar) ═══════════════════ */
+.timeline-layout {
+    display: flex;
+    gap: 0;
+    height: calc(100vh - 200px);
+    min-height: 520px;
+}
+
+.timeline-graph-area {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+}
+
+.timeline-graph-area #timelineGraph {
+    height: 100%;
+}
+
+/* ── Isolated Events Sidebar ── */
+.isolated-sidebar {
+    width: 320px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    background: rgba(12, 16, 24, 0.70);
+    backdrop-filter: blur(16px) saturate(1.3);
+    -webkit-backdrop-filter: blur(16px) saturate(1.3);
+    border-left: 1px solid rgba(255,255,255,0.06);
+    border-radius: 0 12px 12px 0;
+    transition: width 0.3s var(--ease-out), opacity 0.3s ease;
+    overflow: hidden;
+}
+
+.isolated-sidebar.collapsed {
+    width: 0;
+    min-width: 0;
+    flex-shrink: 1;
+    padding: 0;
+    border-left: none;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.isolated-sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    flex-shrink: 0;
+}
+
+.isolated-sidebar-title {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #d4a853;
+}
+
+.isolated-count {
+    color: #5c677d;
+    font-weight: 400;
+    font-size: 0.72rem;
+}
+
+.isolated-toggle-btn {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.03);
+    color: #99a3b6;
+    font-size: 0.65rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+.isolated-toggle-btn:hover { background: rgba(255,255,255,0.08); color: #e6e9ef; }
+
+/* ── Floating expand button (visible when sidebar collapsed) ── */
+.isolated-expand-float {
+    position: absolute;
+    top: 12px;
+    right: 8px;
+    z-index: 50;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(18,23,31,0.75);
+    backdrop-filter: blur(10px) saturate(1.4);
+    -webkit-backdrop-filter: blur(10px) saturate(1.4);
+    color: #99a3b6;
+    font-size: 0.7rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+}
+.isolated-expand-float:hover {
+    background: rgba(212,168,83,0.12);
+    border-color: rgba(212,168,83,0.3);
+    color: #d4a853;
+}
+
+[data-theme="light"] .isolated-expand-float {
+    background: rgba(255,255,255,0.80);
+    border-color: rgba(0,0,0,0.10);
+    color: #4a5568;
+}
+
+/* ── Sidebar filters ── */
+.isolated-filters {
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    flex-shrink: 0;
+}
+
+.isolated-search {
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.03);
+    color: #cbd5e1;
+    font-size: 0.72rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.isolated-search:focus { border-color: rgba(212,168,83,0.35); }
+.isolated-search::placeholder { color: #5c677d; }
+
+.isolated-type-select {
+    width: 100%;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.03);
+    color: #99a3b6;
+    font-size: 0.68rem;
+    outline: none;
+    cursor: pointer;
+}
+
+/* ── Isolated event list ── */
+.isolated-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.isolated-list::-webkit-scrollbar { width: 3px; }
+.isolated-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 3px; }
+
+.isolated-list-empty {
+    text-align: center;
+    padding: 32px 16px;
+    color: #5c677d;
+    font-size: 0.75rem;
+}
+
+.isolated-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    margin-bottom: 4px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 1px solid transparent;
+}
+.isolated-item:hover {
+    background: rgba(255,255,255,0.04);
+    border-color: rgba(255,255,255,0.06);
+}
+
+.isolated-item-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+}
+
+.isolated-item-body { flex: 1; min-width: 0; }
+
+.isolated-item-title {
+    font-size: 0.72rem;
+    color: #cbd5e1;
+    line-height: 1.4;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.isolated-item-meta {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 0.6rem;
+    color: #5c677d;
+}
+
+.isolated-item-level {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 600;
+    font-size: 0.58rem;
+}
+.isolated-item-level[data-level="S"] { color: #e8c97a; background: rgba(212,168,83,0.12); }
+.isolated-item-level[data-level="A"] { color: #b0b8c4; background: rgba(255,255,255,0.06); }
+.isolated-item-level[data-level="B"] { color: #5c677d; background: rgba(255,255,255,0.03); }
+
+/* ── Graph annotation on blank click ── */
+.graph-hint {
+    position: absolute;
+    bottom: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 0.68rem;
+    color: rgba(255,255,255,0.15);
+    pointer-events: none;
+    z-index: 5;
+    transition: opacity 0.5s;
+}
+
+/* ── Light theme overrides ── */
+[data-theme="light"] .isolated-sidebar {
+    background: rgba(248,249,251,0.75);
+    border-left-color: rgba(0,0,0,0.06);
+}
+[data-theme="light"] .isolated-sidebar-title { color: #8b6914; }
+[data-theme="light"] .isolated-search,
+[data-theme="light"] .isolated-type-select {
+    background: rgba(0,0,0,0.03);
+    border-color: rgba(0,0,0,0.08);
+    color: #334155;
+}
+[data-theme="light"] .isolated-item-title { color: #334155; }
+[data-theme="light"] .isolated-item:hover { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.06); }
+[data-theme="light"] .isolated-item-meta { color: #64748b; }
+</style>
+
+<!-- ═══════ LIGHT THEME overrides for timeline-specific styles ═══════ -->
+<style>
+[data-theme="light"] #timelineGraph {
+    background: radial-gradient(ellipse at 50% 40%, rgba(240,242,245,0.90) 0%, rgba(226,230,236,0.95) 100%);
+    border-color: rgba(0,0,0,0.08);
+    box-shadow: 0 2px 16px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.5);
+}
+[data-theme="light"] .legend-bar {
+    background: rgba(0,0,0,0.03);
+    border-color: rgba(0,0,0,0.06);
+}
+[data-theme="light"] .detail-close-btn {
+    background: rgba(255,255,255,0.80);
+    border-color: rgba(0,0,0,0.12);
+    color: #4a5568;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.5);
+}
+[data-theme="light"] .detail-close-btn:hover { color: #dc2626; }
+[data-theme="light"] #nodeDetailFullscreen {
+    background: rgba(255,255,255,0.92);
+    backdrop-filter: blur(20px) saturate(1.0);
+    -webkit-backdrop-filter: blur(20px) saturate(1.0);
+}
+[data-theme="light"] .detail-hero .node-title { color: #1a1d23; }
+[data-theme="light"] .detail-hero .node-subtitle { color: #4a5568; }
+[data-theme="light"] .detail-meta-pill {
+    color: #4a5568;
+    border-color: rgba(0,0,0,0.10);
+    background: rgba(0,0,0,0.04);
+}
+[data-theme="light"] .detail-meta-pill.predicted { color: #a16207; }
+[data-theme="light"] .detail-meta-pill.pending   { color: #64748b; }
+[data-theme="light"] .detail-section-title { color: #b8902e; }
+[data-theme="light"] .detail-section-title::after { background: rgba(0,0,0,0.06); }
+[data-theme="light"] .detail-desc {
+    color: #334155;
+    background: rgba(0,0,0,0.02);
+    border-color: rgba(0,0,0,0.07);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.4);
+}
+[data-theme="light"] .detail-tag {
+    background: rgba(184,144,46,0.08);
+    color: #8b6914;
+    border-color: rgba(184,144,46,0.18);
+}
+[data-theme="light"] .detail-relation-row {
+    color: #4a5568;
+    background: rgba(0,0,0,0.02);
+    border-color: rgba(0,0,0,0.06);
+}
+[data-theme="light"] .detail-relation-row:hover {
+    background: rgba(0,0,0,0.04);
+    border-color: rgba(0,0,0,0.12);
+    box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+}
+[data-theme="light"] .detail-edge-card {
+    background: rgba(0,0,0,0.02);
+    border-color: rgba(0,0,0,0.06);
+}
+[data-theme="light"] .detail-edge-card:hover {
+    background: rgba(0,0,0,0.04);
+    border-color: rgba(0,0,0,0.12);
+    box-shadow: 0 1px 8px rgba(0,0,0,0.08);
+}
+[data-theme="light"] .detail-edge-card .edge-reason { color: #64748b; }
+[data-theme="light"] .edge-btn {
+    color: #4a5568;
+    border-color: rgba(0,0,0,0.10);
+    background: rgba(0,0,0,0.03);
+}
+[data-theme="light"] .edge-btn.reset:hover {
+    background: rgba(0,0,0,0.05);
+    border-color: rgba(0,0,0,0.15);
+    color: #1a1d23;
+}
+[data-theme="light"] .btn-extend {
+    background: rgba(184,144,46,0.06);
+    border-color: rgba(184,144,46,0.30);
+    color: #8b6914;
+}
+[data-theme="light"] .btn-extend:hover {
+    background: rgba(184,144,46,0.12);
+    border-color: rgba(184,144,46,0.50);
+}
+[data-theme="light"] .detail-loading { color: #64748b; }
+[data-theme="light"] .graph-hint { color: rgba(0,0,0,0.15); }
+[data-theme="light"] .form-check-label[for="expiredToggle"] { color: #4a5568 !important; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Legend — Nodes -->
+<div class="legend-bar">
+    <span class="legend-item"><span class="legend-dot" style="background:#4f7cff"></span> 根事件</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#7c5cfc"></span> 衍生事件</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#d4913e"></span> 预测</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#0ea57a"></span> 市场反应</span>
+    <span class="legend-item"><span class="legend-dot" style="background:#d9485e"></span> 证伪</span>
+</div>
+<!-- Legend — Edges -->
+<div class="legend-bar">
+    <span class="legend-item"><span style="display:inline-block;width:20px;border-top:2px solid #5c677d;vertical-align:middle;margin-right:4px"></span> 推断关联</span>
+    <span class="legend-item"><span style="display:inline-block;width:20px;border-top:2px solid #22c55e;vertical-align:middle;margin-right:4px"></span> 已验证因果</span>
+    <span class="legend-item"><span style="display:inline-block;width:20px;border-top:2px dashed #ef4444;vertical-align:middle;margin-right:4px"></span> 已证伪</span>
+</div>
+
+<!-- ═══════════════════ Main Layout: Graph + Isolated Sidebar ═══════════════════ -->
+<div class="timeline-layout" id="timelineLayout">
+    <!-- Graph area -->
+    <div class="timeline-graph-area" id="timelineGraphArea">
+        <div id="timelineGraph">
+            <div class="text-center py-5 text-muted">
+                <div class="spinner-border"></div>
+                <p class="mt-2">加载时间线...</p>
+            </div>
+        </div>
+        <!-- Floating expand button — visible only when sidebar collapsed -->
+        <button class="isolated-expand-float" id="isolatedExpandFloat" title="展开孤立事件侧边栏" onclick="toggleIsolatedSidebar()" style="display:none">◀</button>
+    </div>
+
+    <!-- Isolated events sidebar -->
+    <div class="isolated-sidebar" id="isolatedSidebar">
+        <div class="isolated-sidebar-header">
+            <span class="isolated-sidebar-title">📋 孤立事件 <small class="isolated-count" id="isolatedCount"></small></span>
+            <button class="isolated-toggle-btn" id="toggleSidebarBtn" title="收起侧边栏" onclick="toggleIsolatedSidebar()">◀</button>
+        </div>
+
+        <div class="isolated-filters">
+            <input type="text" class="isolated-search" id="isolatedSearch" placeholder="搜索事件标题...">
+            <select class="isolated-type-select" id="isolatedTypeFilter">
+                <option value="">全部类型</option>
+                <option value="root_event">🔵 根事件</option>
+                <option value="derived_event">🟣 衍生事件</option>
+                <option value="prediction">🟠 预测</option>
+                <option value="market_reaction">🟢 市场反应</option>
+                <option value="verification">🔴 证伪</option>
+            </select>
+        </div>
+
+        <div class="isolated-list" id="isolatedList">
+            <div class="isolated-list-empty">加载中...</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let graphChart = null;
+let _loadGraphTimer = null;
+let _loadGraphAbort = null;
+
+// Detail mode state — global so exitDetailMode() can reset them
+let _isDetailOpen = false;
+let _activeNodeId = null;
+let _activeNodeData = null;
+let _capturedNode = null; // { cx, cy, radius, color } for reverse animation
+let _escHandler = null;   // Esc key listener reference for cleanup
+let _animToken = 0;       // animation sequence counter — cancels stale callbacks
+
+// Promise-based delay that rejects if a newer animation has started
+function _animDelay(ms, token) {
+    return new Promise(function(resolve, reject) {
+        setTimeout(function() {
+            if (_animToken !== token) reject(new Error('Animation cancelled'));
+            else resolve();
+        }, ms);
+    });
+}
+
+// ── Theme-aware color helper ──────────────────────────────────────────
+function tc(lightColor, darkColor) {
+    return document.documentElement.hasAttribute('data-theme') ? lightColor : darkColor;
+}
+// Listen for theme changes and re-render if needed
+window.addEventListener('themechange', function() {
+    if (graphChart && !graphChart.isDisposed()) {
+        loadGraph();
+    }
+});
+
+{% if initial_graph and initial_graph.nodes %}
+const INITIAL_GRAPH = {{ initial_graph | tojson | safe }};
+{% else %}
+const INITIAL_GRAPH = null;
+{% endif %}
+
+document.addEventListener('DOMContentLoaded', () => {
+    if (INITIAL_GRAPH && INITIAL_GRAPH.nodes.length) {
+        renderGraph(INITIAL_GRAPH);
+    } else {
+        loadGraph();
+    }
+});
+
+// ── Load graph (debounced + abortable) ─────────────────────────────────
+function loadGraph() {
+    // Debounce rapid calls (filter toggles, etc.)
+    if (_loadGraphTimer) clearTimeout(_loadGraphTimer);
+    _loadGraphTimer = setTimeout(_doLoadGraph, 150);
+}
+
+async function _doLoadGraph() {
+    const daysEl = document.getElementById('daysFilter');
+    const days = daysEl ? daysEl.value : '90';
+    const dom = document.getElementById('timelineGraph');
+
+    // Abort any in-flight request
+    if (_loadGraphAbort) _loadGraphAbort.abort();
+    _loadGraphAbort = new AbortController();
+
+    // Dispose old chart before replacing DOM (prevents memory leak)
+    if (graphChart && !graphChart.isDisposed()) {
+        var oldWrapper = document.getElementById('echartsWrapper');
+        ChartResizeManager.dispose(graphChart, oldWrapper);
+        graphChart = null;
+    }
+
+    try {
+        const includeExpired = document.getElementById('expiredToggle').checked ? '1' : '0';
+        const resp = await fetch(
+            `/api/v1/timeline/graph?days=${days}&include_expired=${includeExpired}`,
+            { signal: _loadGraphAbort.signal }
+        );
+        const data = await resp.json();
+
+        if (!data.success || !data.data.nodes.length) {
+            dom.innerHTML = `
+                <div class="text-center py-5 text-muted">
+                    <i class="bi bi-diagram-3 display-1 d-block mb-2"></i>
+                    <h5>暂无时间线数据</h5>
+                    <p>当事件管道处理后，Bubble将自动构建</p>
+                    <small>节点: ${data.data?.nodes?.length || 0} | 边: ${data.data?.edges?.length || 0}</small>
+                </div>`;
+            return;
+        }
+
+        renderGraph(data.data);
+    } catch(e) {
+        if (e.name === 'AbortError') return; // intentionally cancelled
+        dom.innerHTML = `<div class="alert alert-danger m-3">加载失败: ${e.message}</div>`;
+    }
+}
+
+function renderGraph(graph) {
+    const container = document.getElementById('timelineGraph');
+
+    // Clear old content but preserve the graph wrapper
+    container.innerHTML = '';
+
+    // Create ECharts wrapper (this is what we'll zoom)
+    const wrapper = document.createElement('div');
+    wrapper.className = 'echarts-wrapper';
+    wrapper.id = 'echartsWrapper';
+    container.appendChild(wrapper);
+
+    // Graph hint
+    const hint = document.createElement('div');
+    hint.className = 'graph-hint';
+    hint.textContent = '点击节点查看事件详情';
+    container.appendChild(hint);
+
+    if (graphChart) ChartResizeManager.dispose(graphChart, wrapper);
+    graphChart = echarts.init(wrapper);
+
+    // ══════════════════════════════════════════════════════════════════
+    //  Liquid Glass node styles — high transparency, saturated blur
+    //  Key: low alpha body → see-through; bright specular → wet glass
+    // ══════════════════════════════════════════════════════════════════
+    function glassGradient(highlight, body, edge, rim) {
+        return {
+            type: 'radial',
+            x: 0.30, y: 0.24, r: 0.68,
+            colorStops: [
+                {offset: 0,    color: highlight},   // bright specular dot
+                {offset: 0.12, color: body},         // translucent body
+                {offset: 0.50, color: edge},         // curvature shadow
+                {offset: 1,    color: rim}           // outer halo
+            ]
+        };
+    }
+
+    var TYPE_COLORS = {
+        root_event:       {bg: '#4f7cff', border: 'rgba(160,195,255,0.35)',
+                           gradient: glassGradient(
+                               'rgba(220,240,255,0.72)',   // bright icy specular
+                               'rgba(79,124,255,0.28)',     // translucent body
+                               'rgba(35,60,160,0.30)',      // soft shadow
+                               'rgba(90,140,255,0.10)'      // rim halo
+                           ),
+                           glow: 'rgba(79,124,255,0.18)'},
+        derived_event:    {bg: '#7c5cfc', border: 'rgba(170,150,255,0.32)',
+                           gradient: glassGradient(
+                               'rgba(225,210,255,0.68)',
+                               'rgba(124,92,252,0.26)',
+                               'rgba(55,38,155,0.28)',
+                               'rgba(140,110,255,0.08)'
+                           ),
+                           glow: 'rgba(124,92,252,0.16)'},
+        prediction:       {bg: '#d4913e', border: 'rgba(240,180,90,0.32)',
+                           gradient: glassGradient(
+                               'rgba(255,240,200,0.68)',
+                               'rgba(212,145,62,0.26)',
+                               'rgba(130,80,22,0.28)',
+                               'rgba(225,160,70,0.08)'
+                           ),
+                           glow: 'rgba(212,145,62,0.16)'},
+        market_reaction:  {bg: '#0ea57a', border: 'rgba(60,210,160,0.30)',
+                           gradient: glassGradient(
+                               'rgba(200,252,230,0.65)',
+                               'rgba(14,165,122,0.25)',
+                               'rgba(4,85,60,0.28)',
+                               'rgba(35,190,140,0.08)'
+                           ),
+                           glow: 'rgba(14,165,122,0.15)'},
+        verification:     {bg: '#d9485e', border: 'rgba(240,120,135,0.30)',
+                           gradient: glassGradient(
+                               'rgba(255,215,220,0.65)',
+                               'rgba(217,72,94,0.26)',
+                               'rgba(130,28,38,0.28)',
+                               'rgba(230,95,115,0.08)'
+                           ),
+                           glow: 'rgba(217,72,94,0.15)'},
+    };
+    const categories = [
+        {name: 'root_event',      itemStyle: {color: TYPE_COLORS.root_event.bg}},
+        {name: 'derived_event',   itemStyle: {color: TYPE_COLORS.derived_event.bg}},
+        {name: 'prediction',      itemStyle: {color: TYPE_COLORS.prediction.bg}},
+        {name: 'market_reaction', itemStyle: {color: TYPE_COLORS.market_reaction.bg}},
+        {name: 'verification',    itemStyle: {color: TYPE_COLORS.verification.bg}},
+    ];
+
+    // Build ECharts node data with liquid glass gradients
+    const nodes = graph.nodes.map(n => {
+        const typeCfg = TYPE_COLORS[n.node_type] || TYPE_COLORS.derived_event;
+        const catIdx = categories.findIndex(c => c.name === n.node_type);
+        return {
+            ...n,
+            id: n.id,
+            name: n.label,
+            category: catIdx >= 0 ? catIdx : 1,
+            symbolSize: 24 + (n.confidence || 0.5) * 26,
+            itemStyle: {
+                color: typeCfg.gradient || typeCfg.bg,
+                borderColor: typeCfg.border,
+                borderWidth: 0.8,
+                shadowBlur: 10,
+                shadowColor: typeCfg.glow,
+                opacity: n.is_expired ? 0.35 : 1.0,
+            },
+            label: {show: true, fontSize: 10, color: tc('#4a5568', '#b0b8c4')},
+        };
+    });
+
+    const edges = graph.edges.map(function(e) {
+        return {
+            source: e.from,
+            target: e.to,
+            _edgeLabel: e.label || e.relation_type || '',
+            _edgeTitle: e.title || '',
+            value: e.value,
+            lineStyle: {
+                color: e.color?.color || '#4a5568',
+                type: e.dashes ? 'dashed' : 'solid',
+                width: Math.max(0.6, (e.value || 0.5) * 2.5),
+                opacity: 0.6,
+            },
+        };
+    });
+
+    const option = {
+        tooltip: {
+            formatter: function(p) {
+                if (p.dataType === 'node') {
+                    var name = p.data.name || '';
+                    return '<b>' + name + '</b><br>类型: ' + (p.data.node_type||'') + '<br>状态: ' + (p.data.status||'') + '<br>置信度: ' + (((p.data.confidence || 0.5) * 100).toFixed(0)) + '%';
+                } else {
+                    var edgeLabel = p.data._edgeLabel || p.data.relation_type || 'influences';
+                    var edgeTitle = p.data._edgeTitle || '';
+                    return '<b>' + edgeLabel + '</b><br>强度: ' + ((p.data.value||0).toFixed(2)) + (edgeTitle ? '<br>' + edgeTitle : '');
+                }
+            }
+        },
+        legend: [{
+            data: categories.map(c => c.name),
+            orient: 'vertical',
+            left: 10,
+            top: 10,
+            textStyle: {fontSize: 10},
+        }],
+        series: [{
+            type: 'graph',
+            layout: 'force',
+            data: nodes,
+            links: edges,
+            categories: categories,
+            roam: true,
+            draggable: true,
+            force: {
+                initIterations: 12,
+                repulsion: 300,
+                gravity: 0.1,
+                edgeLength: [100, 250],
+                friction: 0.2,
+                layoutAnimation: true,
+            },
+            scaleLimit: {min: 0.3, max: 5},
+            emphasis: {
+                focus: 'adjacency',
+                scale: 1.6,
+                lineStyle: {width: 2.5, opacity: 0.7},
+                label: {fontSize: 13, fontWeight: 'bold'},
+                itemStyle: {
+                    shadowBlur: 22,
+                    shadowColor: 'rgba(212,168,83,0.30)',
+                    borderColor: tc('rgba(0,0,0,0.25)', 'rgba(255,255,255,0.35)'),
+                    borderWidth: 1.4,
+                },
+            },
+        }],
+    };
+
+    graphChart.setOption(option);
+
+    // Reset detail state on fresh render
+    _isDetailOpen = false;
+    _activeNodeId = null;
+    _activeNodeData = null;
+    _capturedNode = null;
+
+    // ── Node click → zoom-in → detail overlay ─────────────────────────
+    graphChart.on('click', function(params) {
+        if (params.dataType !== 'node') return;
+        if (_isDetailOpen) return;
+        if (!params.data || !params.data.id) return;
+
+        var nodeId = params.data.id;
+        _activeNodeId = nodeId;
+        _activeNodeData = params.data;
+
+        // ① Get node position as % of wrapper for transform-origin
+        var ox = '50%', oy = '50%';
+        try {
+            var layout = graphChart.getModel().getSeriesByIndex(0).getData().getItemLayout(params.dataIndex);
+            if (layout && isFinite(layout.x) && isFinite(layout.y)) {
+                var pt = graphChart.convertToPixel({seriesIndex: 0}, [layout.x, layout.y]);
+                if (pt && isFinite(pt[0]) && isFinite(pt[1])) {
+                    var wr = wrapper.getBoundingClientRect();
+                    if (wr.width > 0 && wr.height > 0) {
+                        ox = ((pt[0] / wr.width)  * 100).toFixed(1) + '%';
+                        oy = ((pt[1] / wr.height) * 100).toFixed(1) + '%';
+                    }
+                }
+            }
+        } catch(e) { /* fallback center */ }
+
+        _capturedNode = { originX: ox, originY: oy };
+
+        // ② Freeze force layout, hide hint
+        graphChart.setOption({ series: [{ force: { layoutAnimation: false } }] });
+        var hint = container.querySelector('.graph-hint');
+        if (hint) hint.style.opacity = '0';
+
+        // ③ Zoom graph toward clicked node (CSS transition handles the animation)
+        wrapper.style.transformOrigin = ox + ' ' + oy;
+        wrapper.style.transform = 'scale(2.8)';
+
+        // ④ Build overlay (hidden — content starts scaled down for "emerge" effect)
+        buildDetailOverlay(container, nodeId, _activeNodeData);
+        var overlay = document.getElementById('nodeDetailFullscreen');
+        if (overlay) {
+            overlay.style.display = 'block';
+            overlay.style.opacity = '0';
+            overlay.style.transition = 'opacity 0.35s ease';
+            var content = overlay.querySelector('.detail-content');
+            if (content) {
+                content.style.transition = 'transform 0.45s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s ease';
+                content.style.transform = 'scale(0.92)';
+                content.style.opacity = '0';
+            }
+        }
+
+        // ⑤+⑥ Animation sequence with token guard — cancels if newer animation starts
+        var animToken = ++_animToken;
+        (async function() {
+            try {
+                await _animDelay(200, animToken);
+                if (overlay) { overlay.style.opacity = '1'; }
+                var c2 = overlay && overlay.querySelector('.detail-content');
+                if (c2) { c2.style.transform = 'scale(1)'; c2.style.opacity = '1'; }
+
+                await _animDelay(500, animToken);
+                _isDetailOpen = true;
+            } catch(e) { /* cancelled by newer animation */ }
+        })();
+    });
+
+    // ── Resize ─────────────────────────────────────────────────────────
+    ChartResizeManager.observe(graphChart, wrapper);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  Full-screen Detail Overlay
+// ═══════════════════════════════════════════════════════════════════════
+
+const nodeTypeLabel = {root_event:'根事件',derived_event:'衍生事件',prediction:'预测',market_reaction:'市场反应',verification:'证伪'};
+const statusLabelMap = {confirmed:'已确认',predicted:'预测中',pending:'待验证',refuted:'已证伪'};
+const nodeColorMap = {root_event:'#4f7cff',derived_event:'#7c5cfc',prediction:'#d4913e',market_reaction:'#0ea57a',verification:'#d9485e'};
+
+function buildDetailOverlay(container, nodeId, nodeData) {
+    // Remove any existing overlay
+    var existing = document.getElementById('nodeDetailFullscreen');
+    if (existing) existing.remove();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'nodeDetailFullscreen';
+    overlay.style.display = 'none'; // shown by click handler mid-animation
+
+    // ── Close button ──
+    var closeBtn = document.createElement('button');
+    closeBtn.className = 'detail-close-btn';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.title = '退出详情 (Esc)';
+    closeBtn.onclick = function() { exitDetailMode(container); };
+    overlay.appendChild(closeBtn);
+
+    // ── Content wrapper ──
+    var content = document.createElement('div');
+    content.className = 'detail-content';
+
+    var nodeColor = nodeColorMap[nodeData.node_type] || '#6b7280';
+    var nodeTitle = nodeData.name || '';
+    var nodeConf = ((nodeData.confidence || 0.5) * 100).toFixed(0);
+    var typeStr = nodeTypeLabel[nodeData.node_type] || nodeData.node_type || '';
+    var statusStr = statusLabelMap[nodeData.status] || nodeData.status || '';
+    var statusClass = nodeData.status || 'pending';
+
+    // ── Hero header ──
+    var heroHtml = '';
+    heroHtml += '<div class="detail-hero">';
+    heroHtml += '<div class="node-icon" style="background:radial-gradient(circle at 32% 28%, rgba(255,255,255,0.18) 0%, ' + nodeColor + ' 30%, rgba(0,0,0,0.18) 100%); box-shadow:0 0 12px ' + nodeColor + '22, inset 0 0.5px 1px rgba(255,255,255,0.08);"></div>';
+    heroHtml += '<div class="node-title">' + escHtml(nodeTitle) + '</div>';
+    heroHtml += '<div class="node-subtitle">' + typeStr + ' · ' + statusStr + ' · 置信度 ' + nodeConf + '%</div>';
+    heroHtml += '</div>';
+
+    // ── Meta pills ──
+    heroHtml += '<div class="detail-meta-bar">';
+    heroHtml += '<span class="detail-meta-pill ' + statusClass + '">' + (statusLabelMap[nodeData.status] || nodeData.status) + '</span>';
+    heroHtml += '<span class="detail-meta-pill">置信度 ' + nodeConf + '%</span>';
+    if (nodeData.tags && nodeData.tags.length) {
+        heroHtml += '<span class="detail-meta-pill">' + nodeData.tags.length + ' 个标签</span>';
+    }
+
+    // Expiration pill
+    var expiresAt = nodeData.expires_at;
+    if (expiresAt) {
+        var expDate = new Date(expiresAt);
+        var now = new Date();
+        var isExpired = expDate < now;
+        var cls = isExpired ? 'refuted' : 'pending';
+        var daysLeft = Math.ceil((expDate - now) / (1000 * 60 * 60 * 24));
+        var label = isExpired
+            ? '⏳ 已过期 ' + Math.abs(daysLeft) + ' 天'
+            : '⏳ 剩余 ' + daysLeft + ' 天';
+        heroHtml += '<span class="detail-meta-pill ' + cls + '">' + label + '</span>';
+    }
+
+    heroHtml += '</div>';
+
+    content.innerHTML = heroHtml;
+
+    // ── Description (instant from graph data) ──
+    var desc = nodeData.description || '';
+    if (desc) {
+        content.innerHTML += '<div class="detail-section">'
+            + '<div class="detail-section-title">📋 事件描述</div>'
+            + '<div class="detail-desc">' + escHtml(desc) + '</div>'
+            + '</div>';
+    }
+
+    // ── Tags (instant from graph data) ──
+    var tags = nodeData.tags || [];
+    if (tags.length) {
+        var tagsHtml = '<div class="detail-section"><div class="detail-section-title">🏷 标签</div><div class="detail-tags">';
+        tags.forEach(function(t) {
+            tagsHtml += '<span class="detail-tag">' + escHtml(t) + '</span>';
+        });
+        tagsHtml += '</div></div>';
+        content.innerHTML += tagsHtml;
+    }
+
+    // ── API loading placeholder ──
+    content.innerHTML += '<div id="detailApiSection" class="detail-loading">'
+        + '<div class="spinner-border spinner-border-sm mb-2"></div>'
+        + '<div>加载因果链数据...</div>'
+        + '</div>';
+
+    // ── Extend button ──
+    content.innerHTML += '<button class="btn-extend" onclick="event.stopPropagation();extendNode(\'' + nodeId + '\')">🔮 基于此事件延伸预测 · 仅供参考</button>';
+    content.innerHTML += '<button class="btn-delete" onclick="event.stopPropagation();deleteNode(\'' + nodeId + '\')">🗑️ 删除此节点及关联边</button>';
+
+    overlay.appendChild(content);
+    container.appendChild(overlay);
+
+    // ── Fetch upstream / downstream / edges (with 10s timeout) ──
+    var fetchController = new AbortController();
+    var fetchTimeout = setTimeout(function() { fetchController.abort(); }, 10000);
+
+    Promise.all([
+        fetch('/api/v1/timeline/nodes/' + nodeId, { signal: fetchController.signal }).then(function(r) { return r.json(); }),
+        fetch('/api/v1/timeline/edges/' + nodeId, { signal: fetchController.signal }).then(function(r) { return r.json(); }),
+    ]).then(function(_ref) {
+        clearTimeout(fetchTimeout);
+        var nodeResp = _ref[0], edgeResp = _ref[1];
+        if (!document.getElementById('nodeDetailFullscreen')) return; // overlay removed
+
+        var apiHtml = '';
+
+        // Upstream
+        if (nodeResp && nodeResp.success && nodeResp.data && nodeResp.data.upstream && nodeResp.data.upstream.length) {
+            apiHtml += '<div class="detail-section"><div class="detail-section-title">← 上游原因</div>';
+            nodeResp.data.upstream.forEach(function(n) {
+                apiHtml += '<div class="detail-relation-row">'
+                    + '<span class="detail-relation-dot" style="background:#4f7cff"></span>'
+                    + '<span style="flex:1">' + escHtml(n.title) + '</span>'
+                    + '<span class="badge bg-secondary" style="font-size:0.6rem">' + escHtml(statusLabelMap[n.status] || n.status || '') + '</span>'
+                    + '</div>';
+            });
+            apiHtml += '</div>';
+        }
+
+        // Downstream
+        if (nodeResp && nodeResp.success && nodeResp.data && nodeResp.data.downstream && nodeResp.data.downstream.length) {
+            apiHtml += '<div class="detail-section"><div class="detail-section-title">→ 下游影响</div>';
+            nodeResp.data.downstream.forEach(function(n) {
+                apiHtml += '<div class="detail-relation-row">'
+                    + '<span class="detail-relation-dot" style="background:#d4913e"></span>'
+                    + '<span style="flex:1">' + escHtml(n.title) + '</span>'
+                    + '<span class="badge bg-secondary" style="font-size:0.6rem">' + escHtml(statusLabelMap[n.status] || n.status || '') + '</span>'
+                    + '</div>';
+            });
+            apiHtml += '</div>';
+        }
+
+        // Causal edges
+        if (edgeResp && edgeResp.success && edgeResp.data) {
+            var allEdges = [].concat(
+                (edgeResp.data.outgoing||[]).map(function(e){e._dir='out';return e;}),
+                (edgeResp.data.incoming||[]).map(function(e){e._dir='in';return e;})
+            );
+            if (allEdges.length) {
+                apiHtml += '<div class="detail-section"><div class="detail-section-title">🔗 因果链</div>';
+                allEdges.forEach(function(e) {
+                    var v = e.verified;
+                    var icon = v === true ? '✅' : v === false ? '❌' : '🔮';
+                    var label = v === true ? '已验证因果' : v === false ? '已证伪' : '推断关联';
+                    var dotColor = v === true ? '#22c55e' : v === false ? '#ef4444' : '#5c677d';
+                    var strengthPct = ((e.strength || 0) * 100).toFixed(1);
+
+                    apiHtml += '<div class="detail-edge-card">';
+                    apiHtml += '<div class="edge-top">';
+                    apiHtml += '<span style="color:' + dotColor + ';font-size:0.85rem">' + icon + '</span>';
+                    apiHtml += '<em style="color:' + tc('#334155','#cbd5e1') + ';font-weight:600">' + escHtml(e.relation_type || 'influences') + '</em>';
+                    apiHtml += '<span style="font-size:0.65rem;color:' + dotColor + ';padding:1px 8px;border-radius:99px;border:1px solid ' + dotColor + '33;background:' + dotColor + '0d">' + label + '</span>';
+                    apiHtml += '<span style="font-size:0.62rem;color:' + tc('#64748b','#5c677d') + ';margin-left:auto">强度 ' + strengthPct + '%</span>';
+                    apiHtml += '</div>';
+                    if (e.logic_chain) {
+                        apiHtml += '<div class="edge-reason">' + escHtml(e.logic_chain) + '</div>';
+                    }
+                    apiHtml += '<div class="edge-actions">';
+                    apiHtml += '<button class="edge-btn confirm" onclick="event.stopPropagation();verifyEdge(\'' + e.id + '\',true)">✅ 确认</button>';
+                    apiHtml += '<button class="edge-btn refute" onclick="event.stopPropagation();verifyEdge(\'' + e.id + '\',false)">❌ 证伪</button>';
+                    apiHtml += '<button class="edge-btn reset" onclick="event.stopPropagation();verifyEdge(\'' + e.id + '\',null)">↩ 重置</button>';
+                    apiHtml += '</div></div>';
+                });
+                apiHtml += '</div>';
+            }
+        }
+
+        if (!apiHtml) {
+            apiHtml = '<div style="text-align:center;color:' + tc('#64748b','#5c677d') + ';padding:24px;font-size:0.82rem">'
+                + '暂无因果链数据<br>'
+                + '<span style="font-size:0.68rem">点击下方 🔮 延伸预测 探索可能的发展</span>'
+                + '</div>';
+        }
+
+        var apiSection = document.getElementById('detailApiSection');
+        if (apiSection) {
+            apiSection.outerHTML = apiHtml;
+        }
+    }).catch(function(e) {
+        clearTimeout(fetchTimeout);
+        var apiSection = document.getElementById('detailApiSection');
+        if (apiSection) {
+            var msg = e.name === 'AbortError' ? '请求超时，请稍后重试' : ('加载失败: ' + escHtml(e.message || ''));
+            apiSection.outerHTML = '<div style="color:var(--text-muted);font-size:0.78rem;text-align:center;padding:24px">' + msg + '</div>';
+        }
+    });
+
+    // ── Keyboard: Esc to exit ──
+    if (_escHandler) {
+        document.removeEventListener('keydown', _escHandler);
+    }
+    _escHandler = function(ev) {
+        if (ev.key === 'Escape') {
+            exitDetailMode(container);
+        }
+    };
+    document.addEventListener('keydown', _escHandler);
+}
+
+// ── Exit detail mode: reverse zoom-out animation ──────────────────────
+function exitDetailMode(container) {
+    // Clean up Esc listener immediately (prevents leak on X-button / delete / refresh)
+    if (_escHandler) {
+        document.removeEventListener('keydown', _escHandler);
+        _escHandler = null;
+    }
+
+    var overlay = document.getElementById('nodeDetailFullscreen');
+    if (!overlay) return;
+
+    // Reset global state immediately
+    _isDetailOpen = false;
+    _activeNodeId = null;
+    _activeNodeData = null;
+
+    // ① Content scales down + fades out (200ms)
+    var content = overlay.querySelector('.detail-content');
+    if (content) {
+        content.style.transition = 'transform 0.2s ease, opacity 0.2s ease';
+        content.style.transform = 'scale(0.95)';
+        content.style.opacity = '0';
+    }
+    overlay.style.opacity = '0';
+    overlay.style.transition = 'opacity 0.25s ease';
+
+    // ② Remove overlay after fade (token-guarded)
+    var exitToken = ++_animToken;
+    setTimeout(function() {
+        if (_animToken !== exitToken) return;
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }, 280);
+
+    // ③ Reverse zoom: wrapper scales back to 1
+    var wrapper = document.getElementById('echartsWrapper');
+    if (wrapper) {
+        wrapper.style.transformOrigin = 'center center';
+        wrapper.style.transform = 'scale(1)';
+    }
+
+    _capturedNode = null;
+
+    // ④ Restore force layout + hint after animation (token-guarded)
+    setTimeout(function() {
+        if (_animToken !== exitToken) return;
+        if (graphChart && !graphChart.isDisposed()) {
+            graphChart.setOption({ series: [{ force: { layoutAnimation: true } }] });
+        }
+        var hint = container.querySelector('.graph-hint');
+        if (hint) hint.style.opacity = '1';
+    }, 900);
+}
+
+// ── Escape HTML ─────────────────────────────────────────────────────────
+function escHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+}
+
+// ── Action lock — prevents double-submit ────────────────────────────────
+var _actionLocks = {};
+function _lock(key) { _actionLocks[key] = true; }
+function _unlock(key) { delete _actionLocks[key]; }
+function _isLocked(key) { return !!_actionLocks[key]; }
+
+// ── Verify edge ─────────────────────────────────────────────────────────
+async function verifyEdge(edgeId, status) {
+    var lockKey = 'verify-' + edgeId;
+    if (_isLocked(lockKey)) return;
+    _lock(lockKey);
+
+    // Disable all buttons in this edge card during the request
+    var card = document.querySelector('.detail-edge-card [onclick*="' + edgeId + '"]');
+    var btns = card ? card.closest('.detail-edge-card').querySelectorAll('.edge-btn') : [];
+    btns.forEach(function(b) { b.disabled = true; });
+
+    try {
+        const resp = await fetch('/api/v1/timeline/edges/' + edgeId + '/verify', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({verified: status}),
+        });
+        const data = await resp.json();
+        if (data.success) {
+            const label = status === true ? '已确认因果 ✅' : status === false ? '已证伪 ❌' : '重置为推断 🔮';
+            showNotification(label, 'success');
+            setTimeout(function() { loadGraph(); }, 300);
+        } else {
+            showNotification('操作失败: ' + (data.error || '未知错误'), 'danger');
+            btns.forEach(function(b) { b.disabled = false; });
+        }
+    } catch(e) {
+        showNotification('请求失败: ' + e.message, 'danger');
+        btns.forEach(function(b) { b.disabled = false; });
+    } finally {
+        _unlock(lockKey);
+    }
+}
+
+// ── Extend predictions ──────────────────────────────────────────────────
+async function extendNode(nodeId) {
+    var lockKey = 'extend-' + nodeId;
+    if (_isLocked(lockKey)) return;
+    _lock(lockKey);
+
+    var btn = document.querySelector('.btn-extend');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 正在生成预测...'; }
+
+    showNotification('正在生成预测...', 'info');
+    try {
+        const resp = await fetch('/api/v1/timeline/extend/' + nodeId, {method:'POST'});
+        const data = await resp.json();
+        if (data.success) {
+            showNotification('已生成 ' + data.data.predictions + ' 个预测节点', 'success');
+            setTimeout(function() { loadGraph(); }, 500);
+        } else {
+            showNotification('延伸失败: ' + (data.error || ''), 'danger');
+            if (btn) { btn.disabled = false; btn.textContent = '🔮 基于此事件延伸预测 · 仅供参考'; }
+        }
+    } catch(e) {
+        showNotification('请求失败: ' + e.message, 'danger');
+        if (btn) { btn.disabled = false; btn.textContent = '🔮 基于此事件延伸预测 · 仅供参考'; }
+    } finally {
+        _unlock(lockKey);
+    }
+}
+
+// ── Delete node ────────────────────────────────────────────────────────
+async function deleteNode(nodeId) {
+    var lockKey = 'delete-' + nodeId;
+    if (_isLocked(lockKey)) return;
+    if (!confirm('确认删除此节点？\n\n所有关联的因果边将被一并删除，此操作不可撤销。')) return;
+    _lock(lockKey);
+
+    var btn = document.querySelector('.btn-delete');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 正在删除...'; }
+
+    try {
+        const resp = await fetch('/api/v1/timeline/nodes/' + nodeId, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.success) {
+            showNotification('节点已删除', 'success');
+            var container = document.getElementById('timelineGraph');
+            if (container && typeof exitDetailMode === 'function') exitDetailMode(container);
+            setTimeout(function() { loadGraph(); }, 400);
+        } else {
+            showNotification('删除失败: ' + (data.error || '未知错误'), 'danger');
+            if (btn) { btn.disabled = false; btn.textContent = '🗑️ 删除此节点及关联边'; }
+        }
+    } catch(e) {
+        showNotification('请求失败: ' + e.message, 'danger');
+        if (btn) { btn.disabled = false; btn.textContent = '🗑️ 删除此节点及关联边'; }
+    } finally {
+        _unlock(lockKey);
+    }
+}
+
+// ── Rebuild timeline (full reset + reprioritize S-level) ──────────────
+async function rebuildTimeline() {
+    if (!confirm('确认重建全部时间线？\n\n这将清空所有节点和因果边，然后从 EventCard 重新构建（S 级事件优先）。\n\n此操作不可撤销。')) return;
+
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '⏳ 重建中...';
+    showNotification('正在重建时间线...', 'info');
+
+    try {
+        const resp = await fetch('/api/v1/timeline/rebuild', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+            var r = data.data;
+            showNotification(
+                '重建完成: ' + r.nodes_created + ' 节点, ' + r.edges_created + ' 边, ' + r.predictions_created + ' 预测',
+                'success'
+            );
+            setTimeout(function() { loadGraph(); }, 500);
+        } else {
+            showNotification('重建失败: ' + (data.error || '未知错误'), 'danger');
+            btn.disabled = false;
+            btn.textContent = '🔧 重建';
+        }
+    } catch(e) {
+        showNotification('请求失败: ' + e.message, 'danger');
+        btn.disabled = false;
+        btn.textContent = '🔧 重建';
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Isolated Events Sidebar
+// ═══════════════════════════════════════════════════════════════════════════
+
+var _isolatedFilterTimer = null;
+var _sidebarCollapsed = false;
+
+const isoColorMap = {root_event:'#4f7cff',derived_event:'#7c5cfc',prediction:'#d4913e',market_reaction:'#0ea57a',verification:'#d9485e'};
+
+function toggleIsolatedSidebar() {
+    _sidebarCollapsed = !_sidebarCollapsed;
+    var sidebar = document.getElementById('isolatedSidebar');
+    var btn = document.getElementById('toggleSidebarBtn');
+    var expandFloat = document.getElementById('isolatedExpandFloat');
+    if (sidebar) {
+        sidebar.classList.toggle('collapsed', _sidebarCollapsed);
+    }
+    if (btn) {
+        btn.textContent = _sidebarCollapsed ? '▶' : '◀';
+        btn.title = _sidebarCollapsed ? '展开侧边栏' : '收起侧边栏';
+    }
+    if (expandFloat) {
+        expandFloat.style.display = _sidebarCollapsed ? 'flex' : 'none';
+    }
+    // Resize chart after transition
+    setTimeout(function() {
+        if (graphChart && !graphChart.isDisposed()) {
+            try { graphChart.resize(); } catch(e) {}
+        }
+    }, 350);
+}
+
+async function loadIsolatedNodes() {
+    var typeFilter = document.getElementById('isolatedTypeFilter').value;
+    var search = document.getElementById('isolatedSearch').value.trim();
+
+    var params = new URLSearchParams();
+    if (typeFilter) params.set('type', typeFilter);
+    if (search) params.set('search', search);
+    params.set('limit', '200');
+    params.set('include_expired', document.getElementById('expiredToggle').checked ? '1' : '0');
+
+    try {
+        var resp = await fetch('/api/v1/timeline/isolated?' + params.toString());
+        var data = await resp.json();
+        if (!data.success) return;
+
+        var nodes = data.data.nodes;
+        var total = data.data.total;
+        var typeCounts = data.data.type_counts || {};
+
+        // Update count badge
+        var countEl = document.getElementById('isolatedCount');
+        if (countEl) countEl.textContent = '(' + total + ')';
+
+        // Update type filter options with counts
+        var select = document.getElementById('isolatedTypeFilter');
+        if (select && !select._counted) {
+            select._counted = true;
+            for (var i = 1; i < select.options.length; i++) {
+                var opt = select.options[i];
+                var cnt = typeCounts[opt.value] || 0;
+                if (cnt > 0) {
+                    opt.textContent = opt.textContent.split(' (')[0] + ' (' + cnt + ')';
+                }
+            }
+        }
+
+        renderIsolatedList(nodes);
+    } catch(e) {
+        var list = document.getElementById('isolatedList');
+        if (list) list.innerHTML = '<div class="isolated-list-empty" style="color:#ef4444">加载失败: ' + escHtml(e.message || '') + '</div>';
+    }
+}
+
+function renderIsolatedList(nodes) {
+    var list = document.getElementById('isolatedList');
+    if (!list) return;
+
+    if (!nodes.length) {
+        list.innerHTML = '<div class="isolated-list-empty">暂无孤立事件</div>';
+        return;
+    }
+
+    var html = '';
+    for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        var dotColor = isoColorMap[n.node_type] || '#6b7280';
+        var typeLabel = nodeTypeLabel[n.node_type] || n.node_type || '';
+        var confPct = ((n.confidence || 0.5) * 100).toFixed(0);
+        var level = n.level || '';
+        var levelHtml = level ? '<span class="isolated-item-level" data-level="' + level + '">' + level + '级</span>' : '';
+
+        html += '<div class="isolated-item" onclick="previewIsolatedNode(\'' + n.id + '\')" title="' + escHtml(n.title || '') + '">';
+        html += '<span class="isolated-item-dot" style="background:' + dotColor + '"></span>';
+        html += '<div class="isolated-item-body">';
+        html += '<div class="isolated-item-title">' + escHtml(n.title || '') + '</div>';
+        html += '<div class="isolated-item-meta">';
+        html += '<span>' + typeLabel + '</span>';
+        html += '<span>' + confPct + '%</span>';
+        html += levelHtml;
+        html += '</div></div></div>';
+    }
+    list.innerHTML = html;
+}
+
+function previewIsolatedNode(nodeId) {
+    // Fetch node details and show overlay (reuse existing detail overlay pattern)
+    var container = document.getElementById('timelineGraph');
+    if (!container) return;
+
+    // Fetch the node data
+    fetch('/api/v1/timeline/nodes/' + nodeId)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.success || !data.data || !data.data.node) {
+                showNotification('无法加载事件详情', 'danger');
+                return;
+            }
+            var nodeInfo = data.data.node;
+            // Build a simple overlay with the event info
+            _activeNodeId = nodeId;
+            _activeNodeData = {
+                id: nodeId,
+                name: nodeInfo.title,
+                node_type: nodeInfo.node_type,
+                status: nodeInfo.status,
+                confidence: nodeInfo.confidence,
+                description: nodeInfo.description,
+                tags: nodeInfo.tags,
+                expires_at: nodeInfo.expires_at,
+            };
+            _capturedNode = { originX: '50%', originY: '50%' };
+
+            // Build detail overlay (reuse existing function)
+            buildDetailOverlay(container, nodeId, _activeNodeData);
+            var overlay = document.getElementById('nodeDetailFullscreen');
+            if (overlay) {
+                overlay.style.display = 'block';
+                overlay.style.opacity = '1';
+                var content = overlay.querySelector('.detail-content');
+                if (content) {
+                    content.style.transform = 'scale(1)';
+                    content.style.opacity = '1';
+                }
+                _isDetailOpen = true;
+            }
+        })
+        .catch(function(e) {
+            showNotification('加载失败: ' + (e.message || ''), 'danger');
+        });
+}
+
+// ── Filter bindings ──────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', function() {
+    var searchInput = document.getElementById('isolatedSearch');
+    var typeSelect = document.getElementById('isolatedTypeFilter');
+
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
+            if (_isolatedFilterTimer) clearTimeout(_isolatedFilterTimer);
+            _isolatedFilterTimer = setTimeout(loadIsolatedNodes, 300);
+        });
+    }
+    if (typeSelect) {
+        typeSelect.addEventListener('change', loadIsolatedNodes);
+    }
+});
+
+// Initial load of isolated nodes (after graph loads)
+var _origRenderGraph = renderGraph;
+renderGraph = function(graph) {
+    _origRenderGraph(graph);
+    // Load isolated nodes after graph renders
+    setTimeout(loadIsolatedNodes, 100);
+};
+
+// ── Take snapshot ──────────────────────────────────────────────────────
+async function takeSnapshot() {
+    try {
+        const resp = await fetch('/api/v1/timeline/snapshot', {method:'POST'});
+        const data = await resp.json();
+        if (data.success) {
+            showNotification('快照已保存: ' + data.data.event_count + ' 节点, ' + data.data.edge_count + ' 边', 'success');
+        }
+    } catch(e) {
+        showNotification('快照失败', 'danger');
+    }
+}
+
+// ── Page unload cleanup (bfcache compatible) ──────────────────────────
+window.addEventListener('pagehide', function() {
+    if (_escHandler) {
+        document.removeEventListener('keydown', _escHandler);
+        _escHandler = null;
+    }
+    if (_loadGraphAbort) _loadGraphAbort.abort();
+    if (_loadGraphTimer) clearTimeout(_loadGraphTimer);
+    if (graphChart && !graphChart.isDisposed()) {
+        var wrapper = document.getElementById('echartsWrapper');
+        ChartResizeManager.dispose(graphChart, wrapper);
+        graphChart = null;
+    }
+});
+</script>
+{% endblock %}

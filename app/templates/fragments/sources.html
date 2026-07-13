@@ -1,0 +1,565 @@
+<!-- fragment: sources (content only, scripts inline) -->
+<div class="page-sources">
+
+<!-- Stats Row -->
+<div class="row g-3 mb-3 stagger-children" id="statsRow">
+    <div class="col-6 col-md-3">
+        <div class="source-stat-card" id="statTotal">
+            <div class="stat-value">{{ stats.total }}</div>
+            <div class="stat-label">总源数</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="source-stat-card accent" id="statActive">
+            <div class="stat-value">{{ stats.active }}</div>
+            <div class="stat-label">已启用</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="source-stat-card" id="statInactive">
+            <div class="stat-value">{{ stats.inactive }}</div>
+            <div class="stat-label">已停用</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="source-stat-card" id="statUser">
+            <div class="stat-value">{{ stats.user }}</div>
+            <div class="stat-label">用户自定义</div>
+        </div>
+    </div>
+</div>
+
+<!-- Batch Action Bar -->
+<div class="source-action-bar" id="actionBar">
+    <button class="btn btn-sm btn-accent" onclick="collectAllSources()" title="采集所有已启用信息源的最新文章">
+        ⚡ 采集全部源
+    </button>
+    <button class="btn btn-sm btn-outline-success" onclick="batchToggle(true)">▶️ 全部启用</button>
+    <button class="btn btn-sm btn-outline-warning" onclick="batchToggle(false)">⏸️ 全部停用</button>
+    <span class="selected-badge" id="selectedBadge">已选 0 个</span>
+</div>
+
+<!-- Source Table -->
+{% if sources %}
+<div class="source-table-panel">
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead>
+                <tr>
+                    <th style="width:38px"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+                    <th>名称</th>
+                    <th>类型</th>
+                    <th>可信度</th>
+                    <th>间隔</th>
+                    <th>状态</th>
+                    <th>最近采集</th>
+                    <th style="width:145px">操作</th>
+                </tr>
+            </thead>
+            <tbody id="sourceTableBody">
+                {% for s in sources %}
+                <tr class="source-row {% if not s.is_active %}inactive{% endif %} row-enter"
+                    data-id="{{ s.id }}" data-name="{{ s.name }}" data-display="{{ s.display_name }}"
+                    data-url="{{ s.base_url or '' }}" data-type="{{ s.source_type }}"
+                    data-credibility="{{ s.credibility }}" data-interval="{{ s.poll_interval }}"
+                    data-active="{{ s.is_active|lower }}" data-system="{{ s.is_system|lower }}"
+                    data-tags='{{ s.tags_json|tojson if s.tags_json else "[]" }}'
+                    data-config='{{ s.config_json|tojson if s.config_json else "{}" }}'
+                    style="animation-delay:{{ loop.index0 * 0.04 }}s">
+                    <td><input type="checkbox" class="source-check" value="{{ s.id }}"></td>
+                    <td>
+                        <div class="fw-semibold small">{{ s.display_name }}
+                            {% if s.is_system %}<span class="badge bg-info ms-1" style="font-size:0.62rem">系统</span>{% endif %}
+                        </div>
+                        <small class="text-muted" style="font-size:0.68rem">{{ s.name }}</small>
+                        {% if s.tags_json %}
+                        <div class="mt-1">
+                            {% for tag in s.tags_json[:3] %}
+                            <span class="badge bg-light text-dark border small" style="font-size:0.62rem">{{ tag }}</span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if s.source_type == 'rss' %}
+                        <span class="badge bg-primary" style="font-size:0.65rem">RSS</span>
+                        {% elif s.source_type == 'webpage' %}
+                        <span class="badge bg-secondary" style="font-size:0.65rem">网页</span>
+                        {% else %}
+                        <span class="badge bg-info" style="font-size:0.65rem">API</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <div class="source-cred-bar">
+                            <div class="progress">
+                                <div class="progress-bar {% if s.credibility >= 0.7 %}bg-success{% elif s.credibility >= 0.4 %}bg-warning{% else %}bg-danger{% endif %}"
+                                     style="width:{{ (s.credibility * 100)|int }}%"></div>
+                            </div>
+                            <span class="cred-text">{{ "%.1f"|format(s.credibility) }}</span>
+                        </div>
+                    </td>
+                    <td><small style="font-size:0.7rem">{{ (s.poll_interval // 60) if s.poll_interval >= 60 else s.poll_interval }}{{ '分' if s.poll_interval >= 60 else '秒' }}</small></td>
+                    <td>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input toggle-switch" type="checkbox"
+                                   {% if s.is_active %}checked{% endif %}
+                                   onchange="toggleSource('{{ s.id }}', this)">
+                        </div>
+                    </td>
+                    <td class="fetch-cell">
+                        {% if s.last_fetch_at %}
+                        <small style="font-size:0.7rem">{{ s.last_fetch_at.strftime('%m-%d %H:%M') }}</small>
+                        {% if s.last_fetch_status %}
+                        <span class="badge {% if s.last_fetch_status == 'success' %}bg-success{% elif s.last_fetch_status == 'timeout' %}bg-warning{% else %}bg-danger{% endif %}" style="font-size:0.58rem">
+                            {{ s.last_fetch_status }}
+                        </span>
+                        {% endif %}
+                        <br><small class="text-muted" style="font-size:0.65rem">{{ s.last_fetch_count }}篇</small>
+                        {% else %}
+                        <small class="text-muted" style="font-size:0.7rem">—</small>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button class="btn-source-action collect" title="立即采集"
+                                onclick="collectSource('{{ s.id }}', '{{ s.name }}', this)">
+                            <i class="bi bi-cloud-download"></i>
+                        </button>
+                        <button class="btn-source-action" title="测试连接"
+                                onclick="testConnection('{{ s.base_url or '' }}', '{{ s.source_type }}')">
+                            <i class="bi bi-plug"></i>
+                        </button>
+                        {% if not s.is_system %}
+                        <button class="btn-source-action" title="编辑"
+                                onclick="editSource('{{ s.id }}')">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn-source-action danger" title="删除"
+                                onclick="confirmDelete('{{ s.id }}', '{{ s.display_name }}')">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% else %}
+<div class="source-table-panel source-empty">
+    <i class="bi bi-rss empty-icon"></i>
+    <h4>暂无信息源</h4>
+    <p>添加自定义 API、RSS 或网页源，开始采集投资情报</p>
+    <button class="btn btn-accent" data-bs-toggle="modal" data-bs-target="#sourceModal" onclick="resetForm()">
+        <i class="bi bi-plus-lg"></i> 添加第一个源
+    </button>
+</div>
+{% endif %}
+
+</div>
+
+<!-- Add / Edit Modal (embedded in fragment for SPA navigation) -->
+<div class="modal fade" id="sourceModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="modalTitle">➕ 添加信息源</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editId">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">名称 <span class="text-danger">*</span></label>
+                        <input class="form-control" id="srcName" placeholder="唯一标识，如 my-blog-rss">
+                        <small class="text-muted">英文标识，创建后不可修改</small>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">显示名称</label>
+                        <input class="form-control" id="srcDisplay" placeholder="如：我的行业观察">
+                    </div>
+                    <div class="col-md-8">
+                        <label class="form-label">URL</label>
+                        <div class="input-group">
+                            <input class="form-control" id="srcUrl" placeholder="https://...">
+                            <button class="btn btn-outline-secondary" type="button" onclick="testConnectionFromForm()">
+                                <i class="bi bi-plug"></i> 测试
+                            </button>
+                        </div>
+                        <div id="testResult" class="mt-1 small"></div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">类型</label>
+                        <select class="form-select" id="srcType">
+                            <option value="rss">RSS / Atom</option>
+                            <option value="webpage">网页爬取</option>
+                            <option value="api">API 端点</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">可信度 (0-1)</label>
+                        <input type="range" class="form-range" min="0" max="1" step="0.05" id="srcCredibility"
+                               value="0.5" oninput="document.getElementById('credVal').textContent = this.value">
+                        <small><span id="credVal">0.5</span></small>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">采集间隔 (秒)</label>
+                        <input type="number" class="form-control" id="srcInterval" value="3600" min="60" step="60">
+                        <small class="text-muted" id="intervalHint">= 60 分钟</small>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">页面编码</label>
+                        <input class="form-control" id="srcEncoding" placeholder="auto（自动检测）">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">初始状态</label>
+                        <select class="form-select" id="srcActive">
+                            <option value="true">启用</option>
+                            <option value="false">停用</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">标签</label>
+                        <input class="form-control" id="srcTags" placeholder="用逗号分隔，如 新能源,光伏,A股">
+                    </div>
+                </div>
+                <div id="advancedSection" class="mt-3" style="display:none">
+                    <hr>
+                    <div class="d-flex align-items-center mb-2">
+                        <i class="bi bi-code-slash text-muted me-2"></i>
+                        <small class="text-muted fw-semibold">CSS 选择器（可选，留空则自动检测文章列表）</small>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label small">文章容器</label>
+                            <input class="form-control form-control-sm" id="srcContainerSel" placeholder=".news-list > li">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">标题</label>
+                            <input class="form-control form-control-sm" id="srcTitleSel" placeholder="h3 a">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">链接</label>
+                            <input class="form-control form-control-sm" id="srcUrlSel" placeholder="a">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">正文/摘要</label>
+                            <input class="form-control form-control-sm" id="srcContentSel" placeholder="p.summary">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">时间</label>
+                            <input class="form-control form-control-sm" id="srcTimeSel" placeholder="time">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small">下一页</label>
+                            <input class="form-control form-control-sm" id="srcNextSel" placeholder="a.next">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">最大页数</label>
+                            <input type="number" class="form-control form-control-sm" id="srcMaxPages" value="1" min="1" max="10">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-accent" id="saveBtn" onclick="saveSource()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirm Modal (embedded in fragment for SPA navigation) -->
+<div class="modal fade confirm-modal" id="deleteModal" tabindex="-1">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle"></i> 确认删除</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-1">确定要删除信息源 <span class="confirm-name" id="deleteName"></span> 吗？</p>
+                <p class="confirm-warning">该操作不可恢复，但关联的历史文章不会被删除。</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-sm btn-danger" id="confirmDeleteBtn" onclick="executeDelete()">
+                    <i class="bi bi-trash"></i> 删除
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ═══════════════════════ Sources JS (inlined, SPA-idempotent) ═════════
+// Use var (not const/let) — scripts may re-execute on SPA re-navigation.
+// Dispose previous modal instances before re-creating to avoid leaks.
+
+if (window._sourceModal) { try { window._sourceModal.dispose(); } catch(e) {} }
+if (window._deleteModal) { try { window._deleteModal.dispose(); } catch(e) {} }
+
+var sourceModal = null;
+var deleteModal = null;
+var pendingDeleteId = null;
+
+(function _initModals() {
+    var srcEl = document.getElementById('sourceModal');
+    if (srcEl) {
+        sourceModal = bootstrap.Modal.getInstance(srcEl) || new bootstrap.Modal(srcEl);
+        window._sourceModal = sourceModal;
+    }
+    var delEl = document.getElementById('deleteModal');
+    if (delEl) {
+        deleteModal = bootstrap.Modal.getInstance(delEl) || new bootstrap.Modal(delEl);
+        window._deleteModal = deleteModal;
+    }
+})();
+
+function refreshStats() {
+    const rows = document.querySelectorAll('#sourceTableBody .source-row');
+    let total = rows.length, active = 0, system = 0;
+    rows.forEach(r => {
+        if (r.dataset.active === 'true') active++;
+        if (r.dataset.system === 'true') system++;
+    });
+    const statTotal = document.getElementById('statTotal'); if (statTotal) statTotal.querySelector('.stat-value').textContent = total;
+    const statActive = document.getElementById('statActive'); if (statActive) statActive.querySelector('.stat-value').textContent = active;
+    const statInactive = document.getElementById('statInactive'); if (statInactive) statInactive.querySelector('.stat-value').textContent = total - active;
+    const statUser = document.getElementById('statUser'); if (statUser) statUser.querySelector('.stat-value').textContent = total - system;
+    ['statTotal','statActive','statInactive','statUser'].forEach(id => {
+        const el = document.getElementById(id); if (!el) return;
+        el.style.transform = 'scale(1.05)'; setTimeout(() => el.style.transform = '', 200);
+    });
+}
+
+function getCheckedIds() { return [...document.querySelectorAll('.source-check:checked')].map(cb => cb.value); }
+function updateSelectHint() { const n = getCheckedIds().length; const badge = document.getElementById('selectedBadge'); if (badge) { badge.textContent = '已选 ' + n + ' 个'; badge.classList.toggle('visible', n > 0); } }
+function toggleSelectAll() { const master = document.getElementById('selectAll'); document.querySelectorAll('.source-check').forEach(cb => cb.checked = master.checked); updateSelectHint(); }
+
+document.addEventListener('click', function(e) { if (e.target.classList.contains('source-check') || e.target.id === 'selectAll') updateSelectHint(); });
+
+async function toggleSource(id, checkbox) {
+    try {
+        const resp = await fetch('/api/v1/sources/' + id + '/toggle', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+            const row = document.querySelector('tr[data-id="' + id + '"]');
+            if (row) { row.classList.toggle('inactive', !data.data.is_active); row.dataset.active = data.data.is_active ? 'true' : 'false'; }
+            refreshStats(); showNotification(data.data.is_active ? '已启用' : '已停用', 'success');
+        } else { checkbox.checked = !checkbox.checked; showNotification(data.error || '操作失败', 'danger'); }
+    } catch (err) { checkbox.checked = !checkbox.checked; showNotification('请求失败: ' + err.message, 'danger'); }
+}
+
+async function batchToggle(active) {
+    let ids = getCheckedIds();
+    if (!ids.length) { ids = [...document.querySelectorAll('.source-check')].map(cb => cb.value); if (!ids.length) return; }
+    try {
+        const resp = await fetch('/api/v1/sources/batch-toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, is_active: active }) });
+        const data = await resp.json();
+        if (data.success) {
+            ids.forEach(id => {
+                const row = document.querySelector('tr[data-id="' + id + '"]');
+                if (row) { row.classList.toggle('inactive', !active); row.dataset.active = active ? 'true' : 'false'; const sw = row.querySelector('.toggle-switch'); if (sw) sw.checked = active; }
+            });
+            refreshStats(); showNotification('已' + (active ? '启用' : '停用') + ' ' + data.updated + ' 个源', 'success');
+        } else { showNotification(data.error || '操作失败', 'danger'); }
+    } catch (err) { showNotification('批量操作失败: ' + err.message, 'danger'); }
+}
+
+function confirmDelete(id, name) { pendingDeleteId = id; document.getElementById('deleteName').textContent = name; deleteModal.show(); }
+
+async function executeDelete() {
+    if (!pendingDeleteId) return;
+    const id = pendingDeleteId; deleteModal.hide();
+    try {
+        const resp = await fetch('/api/v1/sources/' + id, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.success) {
+            const row = document.querySelector('tr[data-id="' + id + '"]');
+            if (row) {
+                row.style.opacity = '0'; row.style.transform = 'translateX(20px)'; row.style.transition = 'opacity 0.3s, transform 0.3s';
+                setTimeout(() => { row.remove(); if (!document.querySelector('#sourceTableBody .source-row')) { if (window._router) window._router.reload(); else location.reload(); } else refreshStats(); }, 300);
+            }
+            showNotification('已删除', 'success');
+        } else { showNotification(data.error || '删除失败', 'danger'); }
+    } catch (err) { showNotification('请求失败: ' + err.message, 'danger'); }
+    pendingDeleteId = null;
+}
+
+async function collectSource(id, name, btn) {
+    const origHTML = btn.innerHTML; btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" style="--bs-spinner-border-color:var(--accent)"></span>';
+    try {
+        const resp = await fetch('/api/v1/sources/' + id + '/collect', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+            const count = data.data?.articles_collected || 0;
+            const row = document.querySelector('tr[data-id="' + id + '"]');
+            if (row) {
+                const cell = row.querySelector('.fetch-cell');
+                const now = new Date();
+                cell.innerHTML = '<small style="font-size:0.7rem">' + (now.getMonth()+1).toString().padStart(2,'0') + '-' + now.getDate().toString().padStart(2,'0') + ' ' + now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0') + '</small> <span class="badge bg-success" style="font-size:0.58rem">success</span><br><small class="text-muted" style="font-size:0.65rem">' + count + '篇</small>';
+            }
+            showNotification('[' + name + '] 采集完成: ' + count + ' 篇', 'success');
+        } else { showNotification('[' + name + '] 采集失败: ' + (data.error || 'unknown'), 'danger'); }
+    } catch (err) { showNotification('[' + name + '] 请求失败: ' + err.message, 'danger'); }
+    btn.disabled = false; btn.innerHTML = origHTML;
+}
+
+async function collectAllSources() {
+    const rows = document.querySelectorAll('#sourceTableBody .source-row');
+    if (!rows.length) { showNotification('没有可用的信息源', 'warning'); return; }
+    const activeRows = [];
+    rows.forEach(function(row) {
+        if (row.dataset.active === 'true') {
+            activeRows.push({ id: row.dataset.id, name: row.dataset.name });
+        }
+    });
+    if (!activeRows.length) { showNotification('没有已启用的信息源', 'warning'); return; }
+    let successCount = 0, failCount = 0, totalArticles = 0;
+    showNotification('开始采集 ' + activeRows.length + ' 个信息源...', 'info');
+    for (var i = 0; i < activeRows.length; i++) {
+        var item = activeRows[i];
+        try {
+            var resp = await fetch('/api/v1/sources/' + item.id + '/collect', { method: 'POST' });
+            var data = await resp.json();
+            if (data.success) { successCount++; totalArticles += (data.data?.articles_collected || 0); }
+            else { failCount++; }
+        } catch (err) { failCount++; }
+    }
+    if (totalArticles > 0) {
+        showNotification('全部采集完成！共 ' + totalArticles + ' 篇新文章。点击顶部 🔄 采集 按钮处理', 'success');
+    } else if (failCount > 0) {
+        showNotification('采集完成: ' + successCount + ' 成功, ' + failCount + ' 失败, 0 篇新文章', 'warning');
+    } else {
+        showNotification('采集完成: ' + successCount + ' 源均无新文章', 'info');
+    }
+    setTimeout(function() {
+        if (window._router) window._router.reload();
+        else location.reload();
+    }, 1500);
+}
+
+async function testConnection(url, sourceType) {
+    if (!url) { showNotification('该源没有配置URL', 'warning'); return; }
+    const resultDiv = document.getElementById('testResult');
+    if (resultDiv) resultDiv.innerHTML = '<span class="text-muted"><span class="spinner-border spinner-border-sm"></span> 测试中...</span>';
+    try {
+        const resp = await fetch('/api/v1/sources/test-connection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, source_type: sourceType }) });
+        const data = await resp.json(); const r = data.data;
+        if (r.reachable) {
+            if (resultDiv) resultDiv.innerHTML = '<span class="text-success">✅ 可达 — HTTP ' + r.status_code + ', 响应 ' + (r.sample_size/1024).toFixed(1) + ' KB</span>';
+            showNotification('连接成功 (HTTP ' + r.status_code + ')', 'success');
+        } else {
+            if (resultDiv) resultDiv.innerHTML = '<span class="text-danger">❌ 不可达 — ' + (r.error || 'HTTP ' + r.status_code) + '</span>';
+            showNotification('连接失败: ' + (r.error || 'HTTP ' + r.status_code), 'danger');
+        }
+    } catch (err) { if (resultDiv) resultDiv.innerHTML = '<span class="text-danger">请求异常: ' + err.message + '</span>'; showNotification('测试请求异常', 'danger'); }
+}
+
+function testConnectionFromForm() { const url = document.getElementById('srcUrl').value.trim(); const type = document.getElementById('srcType').value; testConnection(url, type); }
+
+document.getElementById('srcType').addEventListener('change', function() { document.getElementById('advancedSection').style.display = this.value === 'webpage' ? '' : 'none'; });
+
+function resetForm() {
+    document.getElementById('editId').value = ''; document.getElementById('modalTitle').textContent = '➕ 添加信息源'; document.getElementById('saveBtn').textContent = '保存';
+    document.getElementById('srcName').value = ''; document.getElementById('srcName').disabled = false; document.getElementById('srcDisplay').value = ''; document.getElementById('srcUrl').value = '';
+    document.getElementById('srcType').value = 'rss'; document.getElementById('srcCredibility').value = '0.5'; document.getElementById('credVal').textContent = '0.5';
+    document.getElementById('srcInterval').value = '3600'; document.getElementById('intervalHint').textContent = '= 60 分钟';
+    document.getElementById('srcActive').value = 'true'; document.getElementById('srcTags').value = ''; document.getElementById('testResult').innerHTML = '';
+    document.getElementById('advancedSection').style.display = 'none';
+    ['srcContainerSel','srcTitleSel','srcUrlSel','srcContentSel','srcTimeSel','srcNextSel'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('srcMaxPages').value = '1'; document.getElementById('srcEncoding').value = '';
+}
+
+function editSource(id) {
+    var row = document.querySelector('tr[data-id="' + id + '"]');
+    if (!row) return;
+    document.getElementById('editId').value = id;
+    document.getElementById('modalTitle').textContent = '✏️ 编辑信息源';
+    document.getElementById('saveBtn').textContent = '更新';
+    document.getElementById('srcName').value = row.dataset.name;
+    document.getElementById('srcName').disabled = true;
+    document.getElementById('srcDisplay').value = row.dataset.display;
+    document.getElementById('srcUrl').value = row.dataset.url;
+    document.getElementById('srcType').value = row.dataset.type;
+    document.getElementById('srcCredibility').value = row.dataset.credibility;
+    document.getElementById('credVal').textContent = row.dataset.credibility;
+    document.getElementById('srcInterval').value = row.dataset.interval;
+    document.getElementById('intervalHint').textContent = '= ' + Math.floor(row.dataset.interval / 60) + ' 分钟';
+    document.getElementById('srcActive').value = row.dataset.active;
+    try {
+        var tags = JSON.parse(row.dataset.tags);
+        document.getElementById('srcTags').value = tags.join(', ');
+    } catch (e) { document.getElementById('srcTags').value = ''; }
+    var cfg = {};
+    try { cfg = JSON.parse(row.dataset.config); } catch(e) {}
+    document.getElementById('srcContainerSel').value = cfg.container_selector || '';
+    document.getElementById('srcTitleSel').value = cfg.title_selector || '';
+    document.getElementById('srcUrlSel').value = cfg.url_selector || '';
+    document.getElementById('srcContentSel').value = cfg.content_selector || '';
+    document.getElementById('srcTimeSel').value = cfg.time_selector || '';
+    document.getElementById('srcNextSel').value = cfg.next_page_selector || '';
+    document.getElementById('srcMaxPages').value = cfg.max_pages || '1';
+    document.getElementById('srcEncoding').value = cfg.encoding || '';
+    document.getElementById('advancedSection').style.display = row.dataset.type === 'webpage' ? '' : 'none';
+    document.getElementById('testResult').innerHTML = '';
+    if (sourceModal) sourceModal.show();
+}
+
+document.getElementById('srcInterval').addEventListener('input', function() {
+    var mins = Math.floor(this.value / 60);
+    document.getElementById('intervalHint').textContent = mins > 0 ? '= ' + mins + ' 分钟' : '= ' + this.value + ' 秒';
+});
+
+async function saveSource() {
+    var editId = document.getElementById('editId').value;
+    var isEdit = !!editId;
+    var name = document.getElementById('srcName').value.trim();
+    if (!isEdit && !name) { showNotification('名称不能为空', 'danger'); return; }
+    var tagsRaw = document.getElementById('srcTags').value;
+    var tags = tagsRaw ? tagsRaw.split(',').map(function(t) { return t.trim(); }).filter(Boolean) : [];
+    var sourceType = document.getElementById('srcType').value;
+    var config = {};
+    if (sourceType === 'webpage') {
+        var selFields = { container_selector: 'srcContainerSel', title_selector: 'srcTitleSel', url_selector: 'srcUrlSel', content_selector: 'srcContentSel', time_selector: 'srcTimeSel', next_page_selector: 'srcNextSel' };
+        for (var key in selFields) {
+            if (!selFields.hasOwnProperty(key)) continue;
+            var v = document.getElementById(selFields[key]).value.trim();
+            if (v) config[key] = v;
+        }
+        var mp = parseInt(document.getElementById('srcMaxPages').value);
+        if (mp > 1) config.max_pages = mp;
+        var enc = document.getElementById('srcEncoding').value.trim();
+        if (enc) config.encoding = enc;
+    }
+    var body = { display_name: document.getElementById('srcDisplay').value.trim(), base_url: document.getElementById('srcUrl').value.trim(), source_type: sourceType, credibility: parseFloat(document.getElementById('srcCredibility').value), poll_interval: parseInt(document.getElementById('srcInterval').value), is_active: document.getElementById('srcActive').value === 'true', tags: tags, config: config };
+    if (!isEdit) body.name = name;
+    var url = isEdit ? '/api/v1/sources/' + editId : '/api/v1/sources';
+    var method = isEdit ? 'PUT' : 'POST';
+    try {
+        var resp = await fetch(url, { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        var data = await resp.json();
+        if (data.success) {
+            if (sourceModal) sourceModal.hide();
+            showNotification(isEdit ? '源已更新' : '源已添加', 'success');
+            if (window._router) window._router.reload();
+            else location.reload();
+        } else { showNotification(data.error || '操作失败', 'danger'); }
+    } catch (err) { showNotification('请求失败: ' + err.message, 'danger'); }
+}
+
+// Cleanup stale modals and event listeners on page destroy
+window._pageDestroy = function() {
+    if (window._sourceModal) { try { window._sourceModal.dispose(); } catch(e) {}; window._sourceModal = null; }
+    if (window._deleteModal) { try { window._deleteModal.dispose(); } catch(e) {}; window._deleteModal = null; }
+    sourceModal = null;
+    deleteModal = null;
+    var overlays = document.querySelectorAll('#sourceModal, #deleteModal, .modal-backdrop');
+    overlays.forEach(function(el) { el.remove(); });
+    document.body.classList.remove('modal-open');
+    document.body.style.removeProperty('overflow');
+    document.body.style.removeProperty('padding-right');
+};
+</script>

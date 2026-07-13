@@ -1,0 +1,52 @@
+# Environment — contains API keys, secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Database (SQLite)
+*.db
+*.sqlite3
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Celery
+celerybeat-schedule
+
+# Logs
+logs/
+*.log
+
+# Playwright
+.playwright/
+
+# Temporary
+*.tmp
+temp/
+
+# Project docs / reports (not source)
+BubbleEvent_*.md
+*.docx
+
+# Claude internal
+.claude/
