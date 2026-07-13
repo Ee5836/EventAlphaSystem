@@ -44,8 +44,7 @@ logs/
 *.tmp
 temp/
 
-# Project docs / reports (not source)
-BubbleEvent_*.md
+# Binary / generated docs
 *.docx
 
 # Claude internal
